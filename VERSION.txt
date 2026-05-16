@@ -1,0 +1,3 @@
+ezDIC v0.1.0
+Developer: Dr. Delun Gong
+Target platform: Windows 10/11 x64

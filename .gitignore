@@ -1,0 +1,25 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+.venv-build/
+
+# PyInstaller and release build outputs
+build/
+dist/
+release/
+*.spec.bak
+
+# Local generated data and scratch outputs
+virtual_extensometer_output*/
+ezdic_export_check/
+strain_results_*.csv
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

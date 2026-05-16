@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+title: ezDIC
+message: "If ezDIC supports your research, please cite or acknowledge the software and contact Dr. Delun Gong for appropriate citation details."
+type: software
+authors:
+  - family-names: Gong
+    given-names: Delun
+    name-particle: Dr.
+version: 0.1.0
+date-released: 2026-05-16
+abstract: "ezDIC is a lightweight virtual extensometer for extracting engineering strain and true strain from image sequences without requiring full-field digital image correlation."
+keywords:
+  - Digital image correlation
+  - virtual extensometer
+  - strain extraction
+  - engineering strain
+  - true strain
+  - materials testing
+license: LicenseRef-Proprietary-Research-Use

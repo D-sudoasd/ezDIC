@@ -1,0 +1,14 @@
+ezDIC Attribution and Usage Notice
+
+Developer:
+Dr. Delun Gong
+
+This software was developed by Dr. Delun Gong for lightweight extraction of linear strain from image sequences.
+
+Users are not permitted to:
+1. claim that they developed this software;
+2. remove or alter the developer attribution;
+3. redistribute, copy, forward, or share this software with unauthorized users;
+4. use this software outside the authorized research or teaching context.
+
+If you need to share or reuse this software, please obtain permission from Dr. Delun Gong first.
