@@ -51,7 +51,7 @@ Optional exports include full CSV tables, correlation plots, tracking overlays, 
 
 ## Windows Quick Start
 
-1. Download `ezDIC_Windows_x64_v0.1.0.zip` from the release package.
+1. Download `ezDIC_Windows_x64_v0.1.1.zip` from the release package.
 2. Extract the full `ezDIC_Windows_x64` folder.
 3. Double-click `ezDIC.exe`.
 4. Do not copy `ezDIC.exe` alone; keep `_internal/` in the same folder.
@@ -77,7 +77,7 @@ The script creates:
 ```text
 release/
   ezDIC_Windows_x64/
-  ezDIC_Windows_x64_v0.1.0.zip
+  ezDIC_Windows_x64_v0.1.1.zip
 ```
 
 ## Validation
@@ -95,6 +95,18 @@ Run:
 ```powershell
 py -m pytest -q
 ```
+
+## How to Cite
+
+This repository includes `CITATION.cff`, so GitHub will show a **Cite this repository** link on the project page. A Zenodo DOI is recommended for formal citation in papers and theses.
+
+Recommended citation format before DOI assignment:
+
+```text
+Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.1) [Computer software]. GitHub. https://github.com/D-sudoasd/ezDIC
+```
+
+After Zenodo assigns a DOI, cite the DOI version of the software release.
 
 ## Scientific Notes
 

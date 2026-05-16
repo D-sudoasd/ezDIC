@@ -6,8 +6,10 @@ authors:
   - family-names: Gong
     given-names: Delun
     name-particle: Dr.
-version: 0.1.0
+version: 0.1.1
 date-released: 2026-05-16
+url: "https://github.com/D-sudoasd/ezDIC"
+repository-code: "https://github.com/D-sudoasd/ezDIC"
 abstract: "ezDIC is a lightweight virtual extensometer for extracting engineering strain and true strain from image sequences without requiring full-field digital image correlation."
 keywords:
   - Digital image correlation

@@ -51,7 +51,7 @@ from PIL import Image, ImageTk
 
 
 APP_NAME = "ezDIC"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 APP_DEVELOPER = "Dr. Delun Gong"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION} - Developed by {APP_DEVELOPER}"
 

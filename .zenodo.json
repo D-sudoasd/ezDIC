@@ -1,0 +1,37 @@
+{
+  "title": "ezDIC: Lightweight Virtual Extensometer for Linear Strain Extraction from Image Sequences",
+  "upload_type": "software",
+  "version": "0.1.1",
+  "publication_date": "2026-05-16",
+  "language": "eng",
+  "access_right": "restricted",
+  "access_conditions": "Access is granted for authorized research or teaching use. Contact Dr. Delun Gong for permission before redistribution, reuse outside the authorized context, or derivative use.",
+  "creators": [
+    {
+      "name": "Gong, Delun"
+    }
+  ],
+  "description": "<p>ezDIC is a lightweight virtual extensometer for extracting linear strain from image sequences. It is designed for materials researchers who need fast, practical extraction of engineering strain and true strain without running a full-field digital image correlation workflow.</p><p>The software tracks two user-defined ROI markers across an image sequence, computes engineering strain and true strain from the ROI-center separation, and exports Origin-compatible TXT files, engineering-strain plots, and quality-control summaries.</p><p>Failed tracking frames are preserved as NaN rather than silently interpolated, so the exported strain history remains auditable for scientific use.</p>",
+  "keywords": [
+    "digital image correlation",
+    "virtual extensometer",
+    "strain extraction",
+    "engineering strain",
+    "true strain",
+    "materials testing",
+    "tensile testing",
+    "image sequence analysis",
+    "Origin-compatible TXT",
+    "Python",
+    "OpenCV"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/D-sudoasd/ezDIC",
+      "relation": "isSupplementTo",
+      "resource_type": "software",
+      "scheme": "url"
+    }
+  ],
+  "notes": "Developed by Dr. Delun Gong. Users are not permitted to claim authorship, remove or alter attribution, redistribute the software to unauthorized users, or use it outside the authorized research or teaching context."
+}

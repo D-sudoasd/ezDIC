@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_app_metadata_and_usage_notice_are_explicit():
     assert ezdic.APP_NAME == "ezDIC"
-    assert ezdic.APP_VERSION == "0.1.0"
+    assert ezdic.APP_VERSION == "0.1.1"
     assert ezdic.APP_DEVELOPER == "Dr. Delun Gong"
     assert "developed by Dr. Delun Gong" in ezdic.USAGE_NOTICE
     assert "claim that they developed this software" in ezdic.USAGE_NOTICE
@@ -26,7 +26,7 @@ def test_window_title_contains_developer():
     finally:
         root.destroy()
 
-    assert title == "ezDIC v0.1.0 - Developed by Dr. Delun Gong"
+    assert title == "ezDIC v0.1.1 - Developed by Dr. Delun Gong"
 
 
 def test_release_support_files_exist_and_include_usage_limits():
@@ -34,16 +34,22 @@ def test_release_support_files_exist_and_include_usage_limits():
     readme = ROOT / "README_使用说明.txt"
     github_readme = ROOT / "README.md"
     version = ROOT / "VERSION.txt"
+    zenodo = ROOT / ".zenodo.json"
+    release_notes = ROOT / "RELEASE_NOTES_v0.1.1.md"
 
     assert notice.exists()
     assert readme.exists()
     assert github_readme.exists()
     assert version.exists()
+    assert zenodo.exists()
+    assert release_notes.exists()
 
     notice_text = notice.read_text(encoding="utf-8")
     readme_text = readme.read_text(encoding="utf-8")
     github_readme_text = github_readme.read_text(encoding="utf-8")
     version_text = version.read_text(encoding="utf-8")
+    zenodo_text = zenodo.read_text(encoding="utf-8")
+    release_notes_text = release_notes.read_text(encoding="utf-8")
 
     assert "Developer:\nDr. Delun Gong" in notice_text
     assert "claim that they developed this software" in notice_text
@@ -55,7 +61,12 @@ def test_release_support_files_exist_and_include_usage_limits():
     assert "Origin-compatible TXT" in github_readme_text
     assert "Digital image correlation" in github_readme_text
     assert "Dr. Delun Gong" in github_readme_text
-    assert "ezDIC v0.1.0" in version_text
+    assert "ezDIC v0.1.1" in version_text
+    assert '"upload_type": "software"' in zenodo_text
+    assert '"access_right": "restricted"' in zenodo_text
+    assert '"title": "ezDIC: Lightweight Virtual Extensometer for Linear Strain Extraction from Image Sequences"' in zenodo_text
+    assert "DOI-ready archival release" in release_notes_text
+    assert "How to cite" in release_notes_text
 
 
 def test_pyinstaller_build_files_define_green_folder_release():
