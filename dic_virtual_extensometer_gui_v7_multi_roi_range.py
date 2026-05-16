@@ -51,16 +51,28 @@ from PIL import Image, ImageTk
 
 
 APP_NAME = "ezDIC"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 APP_DEVELOPER = "Dr. Delun Gong"
-APP_TITLE = f"{APP_NAME} v{APP_VERSION} - Developed by {APP_DEVELOPER}"
+APP_DOI = "10.5281/zenodo.20222465"
+APP_DOI_URL = f"https://doi.org/{APP_DOI}"
+APP_TITLE = f"{APP_NAME} v{APP_VERSION} - Developed by {APP_DEVELOPER} - DOI: {APP_DOI}"
 
-USAGE_NOTICE = """ezDIC Attribution and Usage Notice
+CITATION_TEXT = f"""Recommended citation:
+
+Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version {APP_VERSION}) [Computer software]. Zenodo. {APP_DOI_URL}
+"""
+
+USAGE_NOTICE = f"""ezDIC Attribution and Usage Notice
 
 Developer:
-Dr. Delun Gong
+{APP_DEVELOPER}
 
-This software was developed by Dr. Delun Gong for lightweight extraction of linear strain from image sequences.
+DOI:
+{APP_DOI}
+
+This software was developed by {APP_DEVELOPER} for lightweight extraction of linear strain from image sequences.
+
+{CITATION_TEXT.strip()}
 
 Users are not permitted to:
 1. claim that they developed this software;
@@ -68,7 +80,9 @@ Users are not permitted to:
 3. redistribute, copy, forward, or share this software with unauthorized users;
 4. use this software outside the authorized research or teaching context.
 
-If you need to share or reuse this software, please obtain permission from Dr. Delun Gong first.
+If you use ezDIC in a thesis, paper, presentation, or report, please cite the DOI above.
+
+If you need to share or reuse this software, please obtain permission from {APP_DEVELOPER} first.
 """
 
 
@@ -993,10 +1007,11 @@ class MultiROIGUI:
         ttk.Label(side, text=instruction, justify=tk.LEFT, width=50, wraplength=380).pack(anchor="nw")
         ttk.Label(
             side,
-            text=f"Developed by {APP_DEVELOPER}",
+            text=f"Developed by {APP_DEVELOPER}\nDOI: {APP_DOI}",
             foreground="#555555",
+            justify=tk.LEFT,
         ).pack(anchor="w", pady=(6, 0))
-        ttk.Button(side, text="About / Usage Notice", command=self.show_usage_notice).pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(side, text="About / Citation / Usage Notice", command=self.show_usage_notice).pack(fill=tk.X, pady=(8, 0))
 
         ttk.Separator(side).pack(fill=tk.X, pady=8)
 
@@ -1069,7 +1084,7 @@ class MultiROIGUI:
             self.advanced_toggle_btn.config(text="隐藏高级设置")
 
     def show_usage_notice(self):
-        messagebox.showinfo("About / Usage Notice", USAGE_NOTICE)
+        messagebox.showinfo("About / Citation / Usage Notice", USAGE_NOTICE)
 
     # ---------- 日志和文件 ----------
 

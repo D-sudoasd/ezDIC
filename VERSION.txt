@@ -1,3 +1,5 @@
-ezDIC v0.1.1
+ezDIC v0.1.2
 Developer: Dr. Delun Gong
+DOI: 10.5281/zenodo.20222465
+DOI URL: https://doi.org/10.5281/zenodo.20222465
 Target platform: Windows 10/11 x64

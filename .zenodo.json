@@ -1,7 +1,7 @@
 {
   "title": "ezDIC: Lightweight Virtual Extensometer for Linear Strain Extraction from Image Sequences",
   "upload_type": "software",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publication_date": "2026-05-16",
   "language": "eng",
   "access_right": "restricted",
@@ -33,5 +33,5 @@
       "scheme": "url"
     }
   ],
-  "notes": "Developed by Dr. Delun Gong. Users are not permitted to claim authorship, remove or alter attribution, redistribute the software to unauthorized users, or use it outside the authorized research or teaching context."
+  "notes": "Developed by Dr. Delun Gong. DOI: 10.5281/zenodo.20222465. Recommended citation: Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.2) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20222465. Users are not permitted to claim authorship, remove or alter attribution, redistribute the software to unauthorized users, or use it outside the authorized research or teaching context."
 }

@@ -1,10 +1,14 @@
 # ezDIC
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20222465.svg)](https://doi.org/10.5281/zenodo.20222465)
+
 **A lightweight virtual extensometer for extracting linear strain from image sequences.**
 
 ezDIC is designed for researchers who need fast, practical strain extraction without running a full-field Digital image correlation workflow. It tracks two user-defined ROI markers across an image sequence and exports engineering strain, true strain, quality-control information, and Origin-compatible TXT files for plotting and reporting.
 
 Developed by **Dr. Delun Gong**.
+
+DOI: [10.5281/zenodo.20222465](https://doi.org/10.5281/zenodo.20222465)
 
 ## Why ezDIC?
 
@@ -51,7 +55,7 @@ Optional exports include full CSV tables, correlation plots, tracking overlays, 
 
 ## Windows Quick Start
 
-1. Download `ezDIC_Windows_x64_v0.1.1.zip` from the release package.
+1. Download `ezDIC_Windows_x64_v0.1.2.zip` from the release package.
 2. Extract the full `ezDIC_Windows_x64` folder.
 3. Double-click `ezDIC.exe`.
 4. Do not copy `ezDIC.exe` alone; keep `_internal/` in the same folder.
@@ -77,7 +81,7 @@ The script creates:
 ```text
 release/
   ezDIC_Windows_x64/
-  ezDIC_Windows_x64_v0.1.1.zip
+  ezDIC_Windows_x64_v0.1.2.zip
 ```
 
 ## Validation
@@ -98,15 +102,17 @@ py -m pytest -q
 
 ## How to Cite
 
-This repository includes `CITATION.cff`, so GitHub will show a **Cite this repository** link on the project page. A Zenodo DOI is recommended for formal citation in papers and theses.
-
-Recommended citation format before DOI assignment:
+This repository includes `CITATION.cff`, so GitHub will show a **Cite this repository** link on the project page. For papers, theses, reports, and presentations, please cite the Zenodo DOI:
 
 ```text
-Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.1) [Computer software]. GitHub. https://github.com/D-sudoasd/ezDIC
+Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.2) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20222465
 ```
 
-After Zenodo assigns a DOI, cite the DOI version of the software release.
+```text
+DOI: 10.5281/zenodo.20222465
+```
+
+GitHub repository: <https://github.com/D-sudoasd/ezDIC>
 
 ## Scientific Notes
 
@@ -131,6 +137,8 @@ ezDIC is not a replacement for full-field DIC. It does not compute strain maps, 
 ## Attribution And Usage
 
 This software was developed by **Dr. Delun Gong** for lightweight extraction of linear strain from image sequences.
+
+DOI: [10.5281/zenodo.20222465](https://doi.org/10.5281/zenodo.20222465)
 
 Users are not permitted to:
 

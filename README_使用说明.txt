@@ -1,9 +1,14 @@
-ezDIC v0.1.1 使用说明
+ezDIC v0.1.2 使用说明
 ======================
 
 Developer
 ---------
 ezDIC was developed by Dr. Delun Gong.
+
+DOI
+---
+10.5281/zenodo.20222465
+https://doi.org/10.5281/zenodo.20222465
 
 System Requirements
 -------------------
@@ -44,6 +49,9 @@ Attribution And Usage Notice
 ----------------------------
 This software was developed by Dr. Delun Gong for lightweight extraction of linear strain from image sequences.
 
+Recommended citation:
+Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.2) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20222465
+
 Users are not permitted to:
 1. claim that they developed this software;
 2. remove or alter the developer attribution;
@@ -51,6 +59,8 @@ Users are not permitted to:
 4. use this software outside the authorized research or teaching context.
 
 If you need to share or reuse this software, please obtain permission from Dr. Delun Gong first.
+
+If you use ezDIC in a thesis, paper, presentation, or report, please cite the DOI above.
 
 Security Notice
 ---------------

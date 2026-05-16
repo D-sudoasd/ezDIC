@@ -2,7 +2,9 @@
 
 ## DOI-ready archival release
 
-This release is prepared for Zenodo archival and DOI generation. It adds structured software metadata for Zenodo, improves citation information, and keeps the Windows green-folder package available for researchers who want to test ezDIC without installing Python.
+This release is archived by Zenodo and has a citable DOI. It adds structured software metadata for Zenodo, improves citation information, and keeps the Windows green-folder package available for researchers who want to test ezDIC without installing Python.
+
+DOI: [10.5281/zenodo.20222465](https://doi.org/10.5281/zenodo.20222465)
 
 ## What ezDIC does
 
@@ -27,7 +29,7 @@ where `L0` is the initial ROI-center separation and `L` is the current ROI-cente
 
 ## Why this release matters
 
-This version is intended to be archived by Zenodo so researchers can cite a stable software record. The repository now includes:
+This version is archived by Zenodo so researchers can cite a stable software record. The repository now includes:
 
 - `.zenodo.json` for Zenodo metadata.
 - `CITATION.cff` for GitHub citation support.
@@ -36,13 +38,13 @@ This version is intended to be archived by Zenodo so researchers can cite a stab
 
 ## How to cite
 
-Before Zenodo assigns a DOI, cite:
+Please cite this release as:
 
 ```text
-Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.1) [Computer software]. GitHub. https://github.com/D-sudoasd/ezDIC
+Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.1) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20222465
 ```
 
-After Zenodo assigns a DOI, cite the Zenodo DOI for this release.
+DOI: `10.5281/zenodo.20222465`
 
 ## Usage and redistribution
 
