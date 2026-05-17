@@ -1,4 +1,4 @@
-ezDIC v0.1.2 使用说明
+ezDIC v0.1.3 使用说明
 ======================
 
 Developer
@@ -34,12 +34,14 @@ Basic Workflow
 4. Set the start and end frames.
 5. Select strain direction and tracking mode.
 6. Draw ROI 1 and ROI 2, then add the ROI group.
-7. Click Start Analysis and Export.
+7. Optional: set one ROI group role to axial and one to transverse for Poisson-ratio export.
+8. Click Start Analysis and Export.
 
 Default Output
 --------------
 By default, ezDIC exports:
 - Origin-compatible TXT files with Frame, EngineeringStrain, and TrueStrain.
+- Poisson-ratio TXT/PNG files when axial/transverse ROI roles are set.
 - Engineering strain PNG plots.
 - QC summary TXT.
 
@@ -50,7 +52,7 @@ Attribution And Usage Notice
 This software was developed by Dr. Delun Gong for lightweight extraction of linear strain from image sequences.
 
 Recommended citation:
-Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.2) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20222465
+Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.3) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20222465
 
 Users are not permitted to:
 1. claim that they developed this software;

@@ -17,6 +17,7 @@ Many materials experiments only require a reliable 1D strain history rather than
 - **Simple workflow**: load images, draw two ROIs, run tracking, export strain.
 - **Virtual extensometer model**: strain is computed from the changing distance between two tracked ROI centers.
 - **Origin-compatible TXT output**: the default export contains `Frame`, `EngineeringStrain`, and `TrueStrain`.
+- **Poisson-ratio export**: mark one ROI group as axial and one as transverse to export transverse strain and `PoissonRatio`.
 - **Quality control built in**: rejected frames, adaptive accepts, correlation scores, and QC summaries are reported.
 - **No Python required for users**: Windows releases are distributed as a green, portable folder with `ezDIC.exe`.
 - **Research-oriented defaults**: failed tracking frames remain `NaN` instead of being silently interpolated.
@@ -36,8 +37,10 @@ By default, ezDIC writes a compact `core/` result folder:
 core/
   strain_G01.txt
   strain_all_groups.txt
+  poisson_ratio.txt        # when axial/transverse ROI roles are set
   engineering_strain_G01.png
   engineering_strain_all_groups.png
+  poisson_ratio.png        # when axial/transverse ROI roles are set
 qc/
   qc_summary.txt
 ```
@@ -53,9 +56,15 @@ Frame	EngineeringStrain	TrueStrain
 
 Optional exports include full CSV tables, correlation plots, tracking overlays, and parameter summaries.
 
+For Poisson-ratio analysis, add one ROI group with role `axial` and one ROI group with role `transverse`. `strain_all_groups.txt` keeps the original per-group columns and appends:
+
+```text
+AxialEngineeringStrain	TransverseEngineeringStrain	PoissonRatio
+```
+
 ## Windows Quick Start
 
-1. Download `ezDIC_Windows_x64_v0.1.2.zip` from the release package.
+1. Download `ezDIC_Windows_x64_v0.1.3.zip` from the release package.
 2. Extract the full `ezDIC_Windows_x64` folder.
 3. Double-click `ezDIC.exe`.
 4. Do not copy `ezDIC.exe` alone; keep `_internal/` in the same folder.
@@ -81,7 +90,7 @@ The script creates:
 ```text
 release/
   ezDIC_Windows_x64/
-  ezDIC_Windows_x64_v0.1.2.zip
+  ezDIC_Windows_x64_v0.1.3.zip
 ```
 
 ## Validation
@@ -105,7 +114,7 @@ py -m pytest -q
 This repository includes `CITATION.cff`, so GitHub will show a **Cite this repository** link on the project page. For papers, theses, reports, and presentations, please cite the Zenodo DOI:
 
 ```text
-Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.2) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20222465
+Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.3) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20222465
 ```
 
 ```text
@@ -129,6 +138,14 @@ true strain = ln(L / L0) = ln(1 + engineering strain)
 ```
 
 where `L0` is the initial ROI-center separation and `L` is the current separation. If tracking fails, the frame is exported as `NaN` to preserve the experimental record.
+
+Poisson ratio is computed from engineering strain:
+
+```text
+PoissonRatio = - TransverseEngineeringStrain / AxialEngineeringStrain
+```
+
+If either ROI group fails tracking, either strain is `NaN`, or `abs(AxialEngineeringStrain) < 1e-6`, the Poisson-ratio value is exported as `NaN`.
 
 ## Limitations
 

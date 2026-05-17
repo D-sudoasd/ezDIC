@@ -10,7 +10,7 @@ DOI_URL = f"https://doi.org/{DOI}"
 
 def test_app_metadata_and_usage_notice_are_explicit():
     assert ezdic.APP_NAME == "ezDIC"
-    assert ezdic.APP_VERSION == "0.1.2"
+    assert ezdic.APP_VERSION == "0.1.3"
     assert ezdic.APP_DEVELOPER == "Dr. Delun Gong"
     assert ezdic.APP_DOI == DOI
     assert ezdic.APP_DOI_URL == DOI_URL
@@ -33,7 +33,34 @@ def test_window_title_contains_developer():
     finally:
         root.destroy()
 
-    assert title == "ezDIC v0.1.2 - Developed by Dr. Delun Gong - DOI: 10.5281/zenodo.20222465"
+    assert title == "ezDIC v0.1.3 - Developed by Dr. Delun Gong - DOI: 10.5281/zenodo.20222465"
+
+
+def test_gui_initializes_poisson_role_selection():
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = ezdic.MultiROIGUI(root)
+        assert app.roi_role.get() == "none"
+        assert app.roi_role_display.get() == "普通"
+    finally:
+        root.destroy()
+
+
+def test_gui_emphasizes_start_analysis_action():
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = ezdic.MultiROIGUI(root)
+        assert app.start_button.cget("text") == "开始分析并导出结果"
+        assert app.start_button.cget("style") == "Primary.TButton"
+        assert "下一步" in app.workflow_hint_var.get()
+    finally:
+        root.destroy()
 
 
 def test_release_support_files_exist_and_include_usage_limits():
@@ -43,7 +70,7 @@ def test_release_support_files_exist_and_include_usage_limits():
     citation = ROOT / "CITATION.cff"
     version = ROOT / "VERSION.txt"
     zenodo = ROOT / ".zenodo.json"
-    release_notes = ROOT / "RELEASE_NOTES_v0.1.2.md"
+    release_notes = ROOT / "RELEASE_NOTES_v0.1.3.md"
 
     assert notice.exists()
     assert readme.exists()
@@ -77,12 +104,12 @@ def test_release_support_files_exist_and_include_usage_limits():
     assert DOI_URL in github_readme_text
     assert f"doi: {DOI}" in citation_text
     assert DOI_URL in citation_text
-    assert "ezDIC v0.1.2" in version_text
+    assert "ezDIC v0.1.3" in version_text
     assert DOI in version_text
     assert '"upload_type": "software"' in zenodo_text
     assert '"access_right": "restricted"' in zenodo_text
     assert '"title": "ezDIC: Lightweight Virtual Extensometer for Linear Strain Extraction from Image Sequences"' in zenodo_text
-    assert "Citation and DOI display update" in release_notes_text
+    assert "Poisson ratio export and GUI workflow update" in release_notes_text
     assert "How to cite" in release_notes_text
     assert DOI_URL in release_notes_text
 

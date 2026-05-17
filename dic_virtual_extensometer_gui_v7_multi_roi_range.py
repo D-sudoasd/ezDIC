@@ -51,7 +51,7 @@ from PIL import Image, ImageTk
 
 
 APP_NAME = "ezDIC"
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 APP_DEVELOPER = "Dr. Delun Gong"
 APP_DOI = "10.5281/zenodo.20222465"
 APP_DOI_URL = f"https://doi.org/{APP_DOI}"
@@ -122,6 +122,15 @@ STRAIN_MODE_LABEL_TO_VALUE = {
     "两点距离应变": "distance",
 }
 STRAIN_MODE_VALUE_TO_LABEL = {v: k for k, v in STRAIN_MODE_LABEL_TO_VALUE.items()}
+
+ROI_ROLE_LABEL_TO_VALUE = {
+    "普通": "none",
+    "拉伸方向": "axial",
+    "横向方向": "transverse",
+}
+ROI_ROLE_VALUE_TO_LABEL = {v: k for k, v in ROI_ROLE_LABEL_TO_VALUE.items()}
+ROI_ROLE_VALUES = set(ROI_ROLE_VALUE_TO_LABEL)
+POISSON_MIN_ABS_AXIAL_ENGINEERING_STRAIN = 1e-6
 
 
 # ==========================
@@ -547,6 +556,40 @@ def _format_origin_float(value):
     return f"{float(value):.8f}"
 
 
+def normalize_roi_role(role):
+    role = str(role or "none").strip()
+    if role not in ROI_ROLE_VALUES:
+        return "none"
+    return role
+
+
+def poisson_roles_are_configured(groups):
+    return any(normalize_roi_role(g.get("role", "none")) != "none" for g in groups)
+
+
+def get_poisson_role_groups(groups):
+    axial = [g for g in groups if normalize_roi_role(g.get("role", "none")) == "axial"]
+    transverse = [g for g in groups if normalize_roi_role(g.get("role", "none")) == "transverse"]
+    return axial, transverse
+
+
+def validate_poisson_role_groups(groups):
+    if not poisson_roles_are_configured(groups):
+        return False
+
+    axial, transverse = get_poisson_role_groups(groups)
+    errors = []
+    if len(axial) != 1:
+        errors.append(f"拉伸方向 ROI 组必须且只能有 1 个；当前为 {len(axial)} 个。")
+    if len(transverse) != 1:
+        errors.append(f"横向方向 ROI 组必须且只能有 1 个；当前为 {len(transverse)} 个。")
+    if errors:
+        raise RuntimeError("\n".join(errors))
+    if axial[0].get("name") == transverse[0].get("name"):
+        raise RuntimeError("同一个 ROI 组不能同时作为拉伸方向和横向方向。")
+    return True
+
+
 def build_core_strain_table(gdf):
     """
     Build the minimal Origin-friendly strain table:
@@ -590,7 +633,55 @@ def write_origin_txt(gdf, path):
             )
 
 
-def build_all_groups_strain_table(df):
+def _group_engineering_strain_table(df, group_name, output_column):
+    gdf = df[df["group"] == group_name].copy()
+    if gdf.empty:
+        return pd.DataFrame(columns=["Frame", output_column])
+
+    table = build_core_strain_table(gdf)
+    strain = table["EngineeringStrain"].astype(float)
+    if "accepted" in gdf.columns:
+        accepted = gdf["accepted"].astype(bool).reset_index(drop=True)
+        strain = strain.where(accepted, np.nan)
+
+    return pd.DataFrame(
+        {
+            "Frame": table["Frame"],
+            output_column: strain,
+        }
+    ).reset_index(drop=True)
+
+
+def build_poisson_ratio_table(df, groups, min_abs_axial=POISSON_MIN_ABS_AXIAL_ENGINEERING_STRAIN):
+    if not validate_poisson_role_groups(groups):
+        raise RuntimeError("请先设置 1 个拉伸方向 ROI 组和 1 个横向方向 ROI 组。")
+    axial_groups, transverse_groups = get_poisson_role_groups(groups)
+    axial_name = axial_groups[0]["name"]
+    transverse_name = transverse_groups[0]["name"]
+
+    axial = _group_engineering_strain_table(df, axial_name, "AxialEngineeringStrain")
+    transverse = _group_engineering_strain_table(df, transverse_name, "TransverseEngineeringStrain")
+    merged = pd.merge(axial, transverse, on="Frame", how="outer").sort_values("Frame").reset_index(drop=True)
+
+    axial_strain = pd.to_numeric(merged["AxialEngineeringStrain"], errors="coerce").astype(float)
+    transverse_strain = pd.to_numeric(merged["TransverseEngineeringStrain"], errors="coerce").astype(float)
+    valid = (
+        axial_strain.notna()
+        & transverse_strain.notna()
+        & np.isfinite(axial_strain)
+        & np.isfinite(transverse_strain)
+        & (axial_strain.abs() >= float(min_abs_axial))
+    )
+    poisson = pd.Series(np.nan, index=merged.index, dtype=float)
+    poisson.loc[valid] = -transverse_strain.loc[valid] / axial_strain.loc[valid]
+    merged["PoissonRatio"] = poisson
+
+    return merged[
+        ["Frame", "AxialEngineeringStrain", "TransverseEngineeringStrain", "PoissonRatio"]
+    ].reset_index(drop=True)
+
+
+def build_all_groups_strain_table(df, groups=None):
     tables = []
     for gname, gdf in df.groupby("group", sort=False):
         sg = safe_name(gname)
@@ -608,13 +699,20 @@ def build_all_groups_strain_table(df):
     merged = tables[0]
     for table in tables[1:]:
         merged = pd.merge(merged, table, on="Frame", how="outer")
-    return merged.sort_values("Frame").reset_index(drop=True)
+    merged = merged.sort_values("Frame").reset_index(drop=True)
+
+    if groups is not None and poisson_roles_are_configured(groups):
+        poisson = build_poisson_ratio_table(df, groups)
+        merged = pd.merge(merged, poisson, on="Frame", how="outer")
+        merged = merged.sort_values("Frame").reset_index(drop=True)
+
+    return merged
 
 
-def write_all_groups_origin_txt(df, path):
+def write_all_groups_origin_txt(df, path, groups=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    table = build_all_groups_strain_table(df)
+    table = build_all_groups_strain_table(df, groups)
 
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write("\t".join(table.columns) + "\n")
@@ -626,6 +724,23 @@ def write_all_groups_origin_txt(df, path):
                 else:
                     values.append(_format_origin_float(row[col]))
             f.write("\t".join(values) + "\n")
+
+
+def write_poisson_ratio_txt(df, groups, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table = build_poisson_ratio_table(df, groups)
+
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("Frame\tAxialEngineeringStrain\tTransverseEngineeringStrain\tPoissonRatio\n")
+        for _, row in table.iterrows():
+            frame = "NaN" if pd.isna(row["Frame"]) else str(int(row["Frame"]))
+            f.write(
+                f"{frame}\t"
+                f"{_format_origin_float(row['AxialEngineeringStrain'])}\t"
+                f"{_format_origin_float(row['TransverseEngineeringStrain'])}\t"
+                f"{_format_origin_float(row['PoissonRatio'])}\n"
+            )
 
 
 def plot_engineering_strain(gdf, path, title):
@@ -663,6 +778,41 @@ def plot_engineering_strain(gdf, path, title):
     plt.xlabel("Frame")
     plt.ylabel("Engineering strain")
     plt.title(title)
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(path, dpi=300)
+    plt.close()
+
+
+def plot_poisson_ratio(df, groups, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    table = build_poisson_ratio_table(df, groups)
+    frame = table["Frame"].astype(float)
+    ratio = table["PoissonRatio"].astype(float)
+    valid = ratio.notna() & np.isfinite(ratio)
+
+    plt.figure(figsize=(7, 5))
+    plt.plot(frame, ratio, color="#2ca02c", linewidth=1, alpha=0.7)
+    if valid.any():
+        plt.scatter(frame[valid], ratio[valid], color="#2ca02c", s=18, label="Valid")
+    invalid = ~valid
+    if invalid.any():
+        finite_ratio = ratio[valid]
+        if len(finite_ratio) > 0:
+            ymin = float(finite_ratio.min())
+            ymax = float(finite_ratio.max())
+            span = max(ymax - ymin, 1e-6)
+            invalid_y = np.full(int(invalid.sum()), ymin - 0.08 * span)
+        else:
+            invalid_y = np.zeros(int(invalid.sum()))
+        plt.scatter(frame[invalid], invalid_y, color="#d62728", marker="x", s=38, label="NaN")
+
+    plt.xlabel("Frame")
+    plt.ylabel("Poisson ratio")
+    plt.title("Poisson ratio")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
@@ -790,6 +940,8 @@ class MultiROIGUI:
         self.soft_corr = tk.DoubleVar(value=0.35)
         self.strain_mode = tk.StringVar(value="auto")
         self.strain_mode_display = tk.StringVar(value=STRAIN_MODE_VALUE_TO_LABEL["auto"])
+        self.roi_role = tk.StringVar(value="none")
+        self.roi_role_display = tk.StringVar(value=ROI_ROLE_VALUE_TO_LABEL["none"])
         self.tracking_preset = tk.StringVar(value="标准")
         self.preset_status_var = tk.StringVar(value="当前追踪模式：标准")
         self._applying_preset = False
@@ -857,9 +1009,34 @@ class MultiROIGUI:
         ]:
             var.trace_add("write", self.mark_tracking_custom)
 
+        self.configure_ui_style()
         self.build_ui()
 
     # ---------- UI ----------
+
+    def configure_ui_style(self):
+        self.style = ttk.Style(self.root)
+        try:
+            if "clam" in self.style.theme_names():
+                self.style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        base_font = ("Microsoft YaHei UI", 9)
+        title_font = ("Microsoft YaHei UI", 10, "bold")
+        primary_font = ("Microsoft YaHei UI", 12, "bold")
+
+        self.root.option_add("*Font", base_font)
+        self.style.configure(".", font=base_font)
+        self.style.configure("TLabelframe.Label", font=title_font)
+        self.style.configure("Primary.TButton", font=primary_font, padding=(18, 12), foreground="#ffffff", background="#0b6fcb")
+        self.style.map(
+            "Primary.TButton",
+            foreground=[("disabled", "#d9d9d9"), ("active", "#ffffff")],
+            background=[("disabled", "#8fa8bf"), ("active", "#095aa5"), ("pressed", "#074b8a")],
+        )
+        self.style.configure("Hint.TLabel", foreground="#4b5563")
+        self.style.configure("StepTitle.TLabel", font=title_font, foreground="#111827")
 
     def build_ui(self):
         main = ttk.Frame(self.root, padding=8)
@@ -966,16 +1143,26 @@ class MultiROIGUI:
         ttk.Button(buttons, text="垂直对齐→纵向应变", command=lambda: self.align_current_pair("y", set_mode=True)).pack(side=tk.LEFT, padx=3)
         ttk.Label(buttons, text="组名：").pack(side=tk.LEFT, padx=(14, 2))
         ttk.Entry(buttons, textvariable=self.group_name_var, width=14).pack(side=tk.LEFT, padx=3)
+        ttk.Label(buttons, text="角色：").pack(side=tk.LEFT, padx=(8, 2))
+        role_box = ttk.Combobox(
+            buttons,
+            textvariable=self.roi_role_display,
+            values=list(ROI_ROLE_LABEL_TO_VALUE.keys()),
+            width=10,
+            state="readonly",
+        )
+        role_box.pack(side=tk.LEFT, padx=3)
+        role_box.bind("<<ComboboxSelected>>", self.sync_roi_role_from_display)
         ttk.Button(buttons, text="添加当前 ROI 为一组", command=self.add_current_group).pack(side=tk.LEFT, padx=3)
         ttk.Button(buttons, text="更新选中组", command=self.update_selected_group).pack(side=tk.LEFT, padx=3)
         ttk.Button(buttons, text="载入选中组", command=self.load_selected_group).pack(side=tk.LEFT, padx=3)
         ttk.Button(buttons, text="删除选中组", command=self.delete_selected_group).pack(side=tk.LEFT, padx=3)
         ttk.Button(buttons, text="清除当前 ROI", command=self.clear_current_rois).pack(side=tk.LEFT, padx=3)
 
-        columns = ("name", "selected", "actual", "L0", "dx", "dy", "roi1", "roi2")
+        columns = ("name", "role", "selected", "actual", "L0", "dx", "dy", "roi1", "roi2")
         self.group_tree = ttk.Treeview(group_frame, columns=columns, show="headings", height=4)
         for col, width in [
-            ("name", 90), ("selected", 70), ("actual", 70), ("L0", 90),
+            ("name", 90), ("role", 80), ("selected", 70), ("actual", 70), ("L0", 90),
             ("dx", 90), ("dy", 90), ("roi1", 210), ("roi2", 210)
         ]:
             self.group_tree.heading(col, text=col)
@@ -998,13 +1185,18 @@ class MultiROIGUI:
         side = ttk.LabelFrame(middle, text="4. 分析与导出", padding=8)
         side.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
 
-        instruction = (
-            "推荐流程：加载图像 → 设起止帧 → 选择方向和追踪模式 → "
-            "画 ROI1/ROI2 → 添加 ROI 组 → 开始分析。\n\n"
-            "默认只导出 Origin TXT、工程应变图和 QC 摘要；完整 CSV、相关系数图、"
-            "overlay 和参数文件按需勾选。"
-        )
-        ttk.Label(side, text=instruction, justify=tk.LEFT, width=50, wraplength=380).pack(anchor="nw")
+        workflow_frame = ttk.LabelFrame(side, text="新手流程", padding=8)
+        workflow_frame.pack(fill=tk.X, pady=(0, 8))
+        workflow_steps = [
+            "1. 加载图像并确认分析范围",
+            "2. 绘制 ROI1/ROI2，添加至少一组 ROI",
+            "3. 按需设置轴向/横向角色和导出内容",
+        ]
+        for step in workflow_steps:
+            ttk.Label(workflow_frame, text=step, style="StepTitle.TLabel", wraplength=360).pack(anchor="w", pady=1)
+        self.workflow_hint_var = tk.StringVar(value="下一步：确认 ROI 组已经添加，然后点击下方蓝色按钮开始分析。")
+        ttk.Label(workflow_frame, textvariable=self.workflow_hint_var, style="Hint.TLabel", justify=tk.LEFT, wraplength=360).pack(anchor="w", pady=(6, 0))
+
         ttk.Label(
             side,
             text=f"Developed by {APP_DEVELOPER}\nDOI: {APP_DOI}",
@@ -1025,15 +1217,32 @@ class MultiROIGUI:
         ttk.Checkbutton(export_frame, text="追踪 overlay 图片", variable=self.export_overlays).pack(anchor="w")
         ttk.Checkbutton(export_frame, text="参数与详细接受统计", variable=self.export_parameters).pack(anchor="w")
 
-        ttk.Button(side, text="开始分析并导出", command=self.start_processing).pack(fill=tk.X, pady=(0, 8))
+        action_frame = ttk.LabelFrame(side, text="准备好后", padding=10)
+        action_frame.pack(fill=tk.X, pady=(4, 8))
+        self.start_button = ttk.Button(
+            action_frame,
+            text="开始分析并导出结果",
+            command=self.start_processing,
+            style="Primary.TButton",
+        )
+        self.start_button.pack(fill=tk.X)
+        ttk.Label(
+            action_frame,
+            text="开始前请确认：图像已加载、分析范围正确、ROI 组已添加。",
+            style="Hint.TLabel",
+            justify=tk.LEFT,
+            wraplength=360,
+        ).pack(anchor="w", pady=(8, 0))
 
-        self.progress = ttk.Progressbar(side, orient=tk.HORIZONTAL, mode="determinate", length=360)
+        status_frame = ttk.LabelFrame(side, text="运行状态", padding=6)
+        status_frame.pack(fill=tk.X, pady=(0, 8))
+        self.progress = ttk.Progressbar(status_frame, orient=tk.HORIZONTAL, mode="determinate", length=360)
         self.progress.pack(fill=tk.X, pady=(0, 6))
 
         self.status_var = tk.StringVar(value="未加载图像")
-        ttk.Label(side, textvariable=self.status_var, wraplength=380).pack(anchor="w", pady=(0, 6))
+        ttk.Label(status_frame, textvariable=self.status_var, style="Hint.TLabel", wraplength=360).pack(anchor="w")
 
-        self.log_text = tk.Text(side, width=56, height=26, wrap=tk.WORD)
+        self.log_text = tk.Text(side, width=56, height=22, wrap=tk.WORD)
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
     def sync_strain_mode_from_display(self, event=None):
@@ -1043,6 +1252,15 @@ class MultiROIGUI:
     def sync_strain_mode_display(self):
         value = self.strain_mode.get()
         self.strain_mode_display.set(STRAIN_MODE_VALUE_TO_LABEL.get(value, "自动判断"))
+
+    def sync_roi_role_from_display(self, event=None):
+        label = self.roi_role_display.get()
+        self.roi_role.set(ROI_ROLE_LABEL_TO_VALUE.get(label, "none"))
+
+    def sync_roi_role_display(self):
+        value = normalize_roi_role(self.roi_role.get())
+        self.roi_role.set(value)
+        self.roi_role_display.set(ROI_ROLE_VALUE_TO_LABEL.get(value, "普通"))
 
     def apply_tracking_preset(self, event=None):
         name = self.tracking_preset.get()
@@ -1462,6 +1680,7 @@ class MultiROIGUI:
             "name": name,
             "roi1": tuple(self.roi1),
             "roi2": tuple(self.roi2),
+            "role": normalize_roi_role(self.roi_role.get()),
             "selected_mode": selected,
             "actual_mode": actual,
             "dx0": dx,
@@ -1575,6 +1794,8 @@ class MultiROIGUI:
         self.roi2 = tuple(group["roi2"])
         self.strain_mode.set(group["selected_mode"])
         self.sync_strain_mode_display()
+        self.roi_role.set(normalize_roi_role(group.get("role", "none")))
+        self.sync_roi_role_display()
         self.group_name_var.set(group["name"])
         self.log_group_info("已载入", group)
         self.show_image()
@@ -1601,6 +1822,7 @@ class MultiROIGUI:
         for idx, g in enumerate(self.roi_groups):
             values = (
                 g["name"],
+                ROI_ROLE_VALUE_TO_LABEL.get(normalize_roi_role(g.get("role", "none")), "普通"),
                 g["selected_mode"],
                 g["actual_mode"],
                 f"{g['L0']:.1f}",
@@ -1613,7 +1835,8 @@ class MultiROIGUI:
 
     def log_group_info(self, prefix, group):
         self.log(
-            f"{prefix}组 {group['name']}: selected={group['selected_mode']}, "
+            f"{prefix}组 {group['name']}: role={normalize_roi_role(group.get('role', 'none'))}, "
+            f"selected={group['selected_mode']}, "
             f"actual={group['actual_mode']}, L0={group['L0']:.3f}px, "
             f"dx={group['dx0']:.3f}px, dy={group['dy0']:.3f}px, "
             f"ROI1={group['roi1']}, ROI2={group['roi2']}"
@@ -1680,6 +1903,22 @@ class MultiROIGUI:
             if pix <= 0:
                 raise RuntimeError("像素尺寸必须 > 0，或者留空。")
 
+        poisson_enabled = validate_poisson_role_groups(self.roi_groups)
+        if poisson_enabled:
+            axial_groups, transverse_groups = get_poisson_role_groups(self.roi_groups)
+            axial = axial_groups[0]
+            transverse = transverse_groups[0]
+            if axial.get("actual_mode") == transverse.get("actual_mode"):
+                msg = (
+                    "泊松比通常需要一组拉伸方向 ROI 和一组横向收缩 ROI。\n\n"
+                    f"当前两组 actual_mode 都是 {axial.get('actual_mode')}：\n"
+                    f"拉伸方向：{axial.get('name')}\n"
+                    f"横向方向：{transverse.get('name')}\n\n"
+                    "这可能说明方向选择或 ROI 对齐不合适。是否仍然继续？"
+                )
+                if not messagebox.askyesno("泊松比方向警告", msg):
+                    raise RuntimeError("用户取消：泊松比 ROI 方向可能不合适。")
+
         very_small = [g for g in self.roi_groups if g["L0"] < 50]
         if very_small:
             names = ", ".join(g["name"] for g in very_small)
@@ -1706,6 +1945,8 @@ class MultiROIGUI:
 
         self.is_processing = True
         self.progress["value"] = 0
+        if hasattr(self, "start_button"):
+            self.start_button.config(state=tk.DISABLED)
 
         thread = threading.Thread(target=self.process_images_thread, daemon=True)
         thread.start()
@@ -1718,6 +1959,8 @@ class MultiROIGUI:
             self.root.after(0, lambda: self.log(traceback.format_exc()))
         finally:
             self.is_processing = False
+            if hasattr(self, "start_button"):
+                self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
 
     def init_group_states(self, first_img8):
         states = []
@@ -1910,6 +2153,7 @@ class MultiROIGUI:
             "frame": frame_idx,
             "filename": filename,
             "group": group_name,
+            "role": normalize_roi_role(group.get("role", "none")),
             "selected_mode": group["selected_mode"],
             "actual_mode": actual_mode,
             "accepted": accepted,
@@ -2120,6 +2364,7 @@ class MultiROIGUI:
 
         df = pd.DataFrame(all_rows)
         summary = build_qc_summary(df)
+        poisson_enabled = poisson_roles_are_configured(self.roi_groups)
         written_paths = []
 
         if export_origin_txt or export_engineering_png:
@@ -2142,8 +2387,13 @@ class MultiROIGUI:
 
         if export_origin_txt:
             all_txt = core_dir / "strain_all_groups.txt"
-            write_all_groups_origin_txt(df, all_txt)
+            write_all_groups_origin_txt(df, all_txt, self.roi_groups)
             written_paths.append(all_txt)
+
+            if poisson_enabled:
+                poisson_txt = core_dir / "poisson_ratio.txt"
+                write_poisson_ratio_txt(df, self.roi_groups, poisson_txt)
+                written_paths.append(poisson_txt)
 
         if export_engineering_png:
             combined_fig = core_dir / "engineering_strain_all_groups.png"
@@ -2161,6 +2411,11 @@ class MultiROIGUI:
             plt.savefig(combined_fig, dpi=300)
             plt.close()
             written_paths.append(combined_fig)
+
+            if poisson_enabled:
+                poisson_fig = core_dir / "poisson_ratio.png"
+                plot_poisson_ratio(df, self.roi_groups, poisson_fig)
+                written_paths.append(poisson_fig)
 
         if export_qc_summary:
             qc_path = qc_dir / "qc_summary.txt"
@@ -2234,7 +2489,8 @@ class MultiROIGUI:
                 f.write("\nGroups:\n")
                 for g in self.roi_groups:
                     f.write(
-                        f"{g['name']}: selected={g['selected_mode']}, actual={g['actual_mode']}, "
+                        f"{g['name']}: role={normalize_roi_role(g.get('role', 'none'))}, "
+                        f"selected={g['selected_mode']}, actual={g['actual_mode']}, "
                         f"L0={g['L0']:.6f}px, dx={g['dx0']:.6f}px, dy={g['dy0']:.6f}px, "
                         f"roi1={g['roi1']}, roi2={g['roi2']}\n"
                     )

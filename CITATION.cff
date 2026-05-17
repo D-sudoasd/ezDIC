@@ -6,8 +6,8 @@ authors:
   - family-names: Gong
     given-names: Delun
     name-particle: Dr.
-version: 0.1.2
-date-released: 2026-05-16
+version: 0.1.3
+date-released: 2026-05-17
 doi: 10.5281/zenodo.20222465
 url: "https://github.com/D-sudoasd/ezDIC"
 repository-code: "https://github.com/D-sudoasd/ezDIC"
@@ -27,7 +27,7 @@ preferred-citation:
     - family-names: Gong
       given-names: Delun
       name-particle: Dr.
-  version: 0.1.2
-  date-released: 2026-05-16
+  version: 0.1.3
+  date-released: 2026-05-17
   doi: 10.5281/zenodo.20222465
   url: "https://doi.org/10.5281/zenodo.20222465"
