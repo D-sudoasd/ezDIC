@@ -133,6 +133,65 @@ ROI_ROLE_VALUES = set(ROI_ROLE_VALUE_TO_LABEL)
 POISSON_MIN_ABS_AXIAL_ENGINEERING_STRAIN = 1e-6
 
 
+class ToolTip:
+    def __init__(self, widget, text, wraplength=360, delay_ms=450):
+        self.widget = widget
+        self.text = text
+        self.wraplength = wraplength
+        self.delay_ms = delay_ms
+        self.after_id = None
+        self.tip_window = None
+
+        self.widget._tooltip_text = text
+        self.widget.bind("<Enter>", self.schedule, add="+")
+        self.widget.bind("<Leave>", self.hide, add="+")
+        self.widget.bind("<ButtonPress>", self.hide, add="+")
+
+    def schedule(self, event=None):
+        self.unschedule()
+        self.after_id = self.widget.after(self.delay_ms, self.show)
+
+    def unschedule(self):
+        if self.after_id is not None:
+            try:
+                self.widget.after_cancel(self.after_id)
+            except tk.TclError:
+                pass
+            self.after_id = None
+
+    def show(self):
+        self.after_id = None
+        if self.tip_window is not None or not self.text:
+            return
+
+        try:
+            x = self.widget.winfo_rootx() + 18
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        except tk.TclError:
+            return
+
+        self.tip_window = tk.Toplevel(self.widget)
+        self.tip_window.wm_overrideredirect(True)
+        self.tip_window.wm_geometry(f"+{x}+{y}")
+        label = ttk.Label(
+            self.tip_window,
+            text=self.text,
+            justify=tk.LEFT,
+            wraplength=self.wraplength,
+            background="#fff8dc",
+            relief=tk.SOLID,
+            borderwidth=1,
+            padding=(8, 5),
+        )
+        label.pack()
+
+    def hide(self, event=None):
+        self.unschedule()
+        if self.tip_window is not None:
+            self.tip_window.destroy()
+            self.tip_window = None
+
+
 # ==========================
 # 基础函数
 # ==========================
@@ -930,7 +989,7 @@ class MultiROIGUI:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("1440x980")
+        self.configure_initial_window()
 
         self.image_folder = tk.StringVar()
         self.output_folder = tk.StringVar()
@@ -995,6 +1054,7 @@ class MultiROIGUI:
         self.group_name_var = tk.StringVar(value="")
 
         self.is_processing = False
+        self.tooltips = []
 
         for var in [
             self.search_radius,
@@ -1014,6 +1074,18 @@ class MultiROIGUI:
 
     # ---------- UI ----------
 
+    def configure_initial_window(self):
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        width = min(1440, max(1180, screen_w - 160))
+        height = min(940, max(760, screen_h - 140))
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(1180, 760)
+
+    def add_tooltip(self, widget, text):
+        self.tooltips.append(ToolTip(widget, text))
+        return widget
+
     def configure_ui_style(self):
         self.style = ttk.Style(self.root)
         try:
@@ -1024,52 +1096,72 @@ class MultiROIGUI:
 
         base_font = ("Microsoft YaHei UI", 9)
         title_font = ("Microsoft YaHei UI", 10, "bold")
-        primary_font = ("Microsoft YaHei UI", 12, "bold")
+        primary_font = ("Microsoft YaHei UI", 11, "bold")
+        step_font = ("Microsoft YaHei UI", 9, "bold")
 
         self.root.option_add("*Font", base_font)
         self.style.configure(".", font=base_font)
         self.style.configure("TLabelframe.Label", font=title_font)
-        self.style.configure("Primary.TButton", font=primary_font, padding=(18, 12), foreground="#ffffff", background="#0b6fcb")
+        self.style.configure("Primary.TButton", font=primary_font, padding=(14, 8), foreground="#ffffff", background="#0b6fcb")
         self.style.map(
             "Primary.TButton",
             foreground=[("disabled", "#d9d9d9"), ("active", "#ffffff")],
             background=[("disabled", "#8fa8bf"), ("active", "#095aa5"), ("pressed", "#074b8a")],
         )
         self.style.configure("Hint.TLabel", foreground="#4b5563")
-        self.style.configure("StepTitle.TLabel", font=title_font, foreground="#111827")
+        self.style.configure("StepTitle.TLabel", font=step_font, foreground="#111827")
 
     def build_ui(self):
         main = ttk.Frame(self.root, padding=8)
         main.pack(fill=tk.BOTH, expand=True)
+        left = ttk.Frame(main)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        file_frame = ttk.LabelFrame(main, text="1. 图像与输出", padding=8)
+        file_frame = ttk.LabelFrame(left, text="1. 图像与输出", padding=8)
         file_frame.pack(fill=tk.X, side=tk.TOP)
 
         ttk.Label(file_frame, text="图像文件夹：").grid(row=0, column=0, sticky="w")
-        ttk.Entry(file_frame, textvariable=self.image_folder, width=92).grid(row=0, column=1, sticky="we", padx=4)
-        ttk.Button(file_frame, text="选择文件夹", command=self.select_image_folder).grid(row=0, column=2, padx=4)
+        ttk.Entry(file_frame, textvariable=self.image_folder, width=84).grid(row=0, column=1, sticky="we", padx=4)
+        self.select_image_button = ttk.Button(file_frame, text="选择文件夹", command=self.select_image_folder)
+        self.select_image_button.grid(row=0, column=2, padx=4)
+        self.add_tooltip(self.select_image_button, "选择包含连续图像的文件夹；支持 tif/tiff/png/jpg/bmp，程序会按文件名自然排序。")
 
         ttk.Label(file_frame, text="输出文件夹：").grid(row=1, column=0, sticky="w")
-        ttk.Entry(file_frame, textvariable=self.output_folder, width=92).grid(row=1, column=1, sticky="we", padx=4)
-        ttk.Button(file_frame, text="选择输出", command=self.select_output_folder).grid(row=1, column=2, padx=4)
+        ttk.Entry(file_frame, textvariable=self.output_folder, width=84).grid(row=1, column=1, sticky="we", padx=4)
+        self.select_output_button = ttk.Button(file_frame, text="选择输出", command=self.select_output_folder)
+        self.select_output_button.grid(row=1, column=2, padx=4)
+        self.add_tooltip(self.select_output_button, "选择结果保存位置；默认会在图像文件夹下创建 virtual_extensometer_output 目录。")
 
         seq_buttons = ttk.Frame(file_frame)
         seq_buttons.grid(row=2, column=0, columnspan=3, sticky="we", pady=(8, 0))
-        ttk.Button(seq_buttons, text="加载图像序列", command=self.load_first_image).pack(side=tk.LEFT, padx=3)
-        ttk.Label(seq_buttons, text="预览帧：").pack(side=tk.LEFT, padx=(10, 2))
-        ttk.Entry(seq_buttons, textvariable=self.preview_frame_1based, width=7).pack(side=tk.LEFT, padx=2)
-        ttk.Button(seq_buttons, text="显示", command=self.go_to_preview_frame).pack(side=tk.LEFT, padx=2)
-        ttk.Button(seq_buttons, text="上一帧", command=lambda: self.step_preview_frame(-1)).pack(side=tk.LEFT, padx=2)
-        ttk.Button(seq_buttons, text="下一帧", command=lambda: self.step_preview_frame(1)).pack(side=tk.LEFT, padx=2)
-        ttk.Label(seq_buttons, text="分析范围：").pack(side=tk.LEFT, padx=(14, 2))
-        ttk.Entry(seq_buttons, textvariable=self.start_frame_1based, width=7).pack(side=tk.LEFT, padx=2)
-        ttk.Label(seq_buttons, text="到").pack(side=tk.LEFT)
-        ttk.Entry(seq_buttons, textvariable=self.end_frame_1based, width=7).pack(side=tk.LEFT, padx=2)
-        ttk.Button(seq_buttons, text="当前帧设为起始/参考", command=self.set_start_to_current).pack(side=tk.LEFT, padx=3)
-        ttk.Button(seq_buttons, text="当前帧设为结束", command=self.set_end_to_current).pack(side=tk.LEFT, padx=3)
+        self.load_images_button = ttk.Button(seq_buttons, text="加载图像序列", command=self.load_first_image)
+        self.load_images_button.grid(row=0, column=0, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.load_images_button, "读取图像文件夹并显示预览帧；首次加载会把分析范围默认设为第 1 帧到最后一帧。")
+        ttk.Label(seq_buttons, text="预览帧：").grid(row=0, column=1, padx=(12, 2), sticky="w")
+        ttk.Entry(seq_buttons, textvariable=self.preview_frame_1based, width=7).grid(row=0, column=2, padx=2, sticky="w")
+        self.show_preview_button = ttk.Button(seq_buttons, text="显示", command=self.go_to_preview_frame)
+        self.show_preview_button.grid(row=0, column=3, padx=2, sticky="w")
+        self.add_tooltip(self.show_preview_button, "跳转到输入的帧号，用来检查参考帧或结束帧是否合适。")
+        self.prev_frame_button = ttk.Button(seq_buttons, text="上一帧", command=lambda: self.step_preview_frame(-1))
+        self.prev_frame_button.grid(row=0, column=4, padx=2, sticky="w")
+        self.add_tooltip(self.prev_frame_button, "向前预览一帧，不改变已设置的分析范围。")
+        self.next_frame_button = ttk.Button(seq_buttons, text="下一帧", command=lambda: self.step_preview_frame(1))
+        self.next_frame_button.grid(row=0, column=5, padx=2, sticky="w")
+        self.add_tooltip(self.next_frame_button, "向后预览一帧，不改变已设置的分析范围。")
+
+        ttk.Label(seq_buttons, text="分析范围：").grid(row=1, column=0, padx=3, pady=2, sticky="w")
+        ttk.Entry(seq_buttons, textvariable=self.start_frame_1based, width=7).grid(row=1, column=1, padx=2, pady=2, sticky="w")
+        ttk.Label(seq_buttons, text="到").grid(row=1, column=2, sticky="w")
+        ttk.Entry(seq_buttons, textvariable=self.end_frame_1based, width=7).grid(row=1, column=3, padx=2, pady=2, sticky="w")
+        self.set_start_button = ttk.Button(seq_buttons, text="当前帧设为起始/参考", command=self.set_start_to_current)
+        self.set_start_button.grid(row=1, column=4, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.set_start_button, "把当前预览帧设为起始帧；ROI 模板必须在这张参考帧上绘制。")
+        self.set_end_button = ttk.Button(seq_buttons, text="当前帧设为结束", command=self.set_end_to_current)
+        self.set_end_button.grid(row=1, column=5, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.set_end_button, "把当前预览帧设为批量追踪的最后一帧，用于避开无效后段图像。")
         file_frame.columnconfigure(1, weight=1)
 
-        measure_frame = ttk.LabelFrame(main, text="2. 测量设置", padding=8)
+        measure_frame = ttk.LabelFrame(left, text="2. 测量设置", padding=8)
         measure_frame.pack(fill=tk.X, side=tk.TOP, pady=(8, 0))
 
         ttk.Label(measure_frame, text="应变方向").grid(row=0, column=0, sticky="w")
@@ -1132,18 +1224,27 @@ class MultiROIGUI:
         ttk.Entry(self.advanced_frame, textvariable=self.overlay_every, width=7).grid(row=2, column=7, padx=(3, 10), pady=(6, 0))
         self.advanced_frame.grid_remove()
 
-        group_frame = ttk.LabelFrame(main, text="3. ROI 设置", padding=6)
+        group_frame = ttk.LabelFrame(left, text="3. ROI 设置", padding=6)
         group_frame.pack(fill=tk.X, side=tk.TOP, pady=(8, 0))
 
         buttons = ttk.Frame(group_frame)
         buttons.pack(fill=tk.X)
-        ttk.Button(buttons, text="画 ROI 1", command=lambda: self.set_roi_mode(1)).pack(side=tk.LEFT, padx=3)
-        ttk.Button(buttons, text="画 ROI 2", command=lambda: self.set_roi_mode(2)).pack(side=tk.LEFT, padx=3)
-        ttk.Button(buttons, text="水平对齐→横向应变", command=lambda: self.align_current_pair("x", set_mode=True)).pack(side=tk.LEFT, padx=3)
-        ttk.Button(buttons, text="垂直对齐→纵向应变", command=lambda: self.align_current_pair("y", set_mode=True)).pack(side=tk.LEFT, padx=3)
-        ttk.Label(buttons, text="组名：").pack(side=tk.LEFT, padx=(14, 2))
-        ttk.Entry(buttons, textvariable=self.group_name_var, width=14).pack(side=tk.LEFT, padx=3)
-        ttk.Label(buttons, text="角色：").pack(side=tk.LEFT, padx=(8, 2))
+        self.roi1_button = ttk.Button(buttons, text="画 ROI 1", command=lambda: self.set_roi_mode(1))
+        self.roi1_button.grid(row=0, column=0, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.roi1_button, "切换到 ROI 1 绘制模式；在图像上按住鼠标左键拖出矩形，建议覆盖清晰散斑区域。")
+        self.roi2_button = ttk.Button(buttons, text="画 ROI 2", command=lambda: self.set_roi_mode(2))
+        self.roi2_button.grid(row=0, column=1, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.roi2_button, "切换到 ROI 2 绘制模式；ROI 2 与 ROI 1 的中心距就是虚拟引伸计标距。")
+        self.align_x_button = ttk.Button(buttons, text="水平对齐→横向应变", command=lambda: self.align_current_pair("x", set_mode=True))
+        self.align_x_button.grid(row=0, column=2, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.align_x_button, "强制 ROI1/ROI2 中心 y 相同，并把应变方向设为横向；适合左右分开的两个 ROI。")
+        self.align_y_button = ttk.Button(buttons, text="垂直对齐→纵向应变", command=lambda: self.align_current_pair("y", set_mode=True))
+        self.align_y_button.grid(row=0, column=3, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.align_y_button, "强制 ROI1/ROI2 中心 x 相同，并把应变方向设为纵向；适合上下分开的两个 ROI。")
+
+        ttk.Label(buttons, text="组名：").grid(row=1, column=0, padx=(3, 2), pady=2, sticky="w")
+        ttk.Entry(buttons, textvariable=self.group_name_var, width=14).grid(row=1, column=1, padx=3, pady=2, sticky="w")
+        ttk.Label(buttons, text="角色：").grid(row=1, column=2, padx=(3, 2), pady=2, sticky="w")
         role_box = ttk.Combobox(
             buttons,
             textvariable=self.roi_role_display,
@@ -1151,26 +1252,38 @@ class MultiROIGUI:
             width=10,
             state="readonly",
         )
-        role_box.pack(side=tk.LEFT, padx=3)
+        role_box.grid(row=1, column=3, padx=3, pady=2, sticky="w")
         role_box.bind("<<ComboboxSelected>>", self.sync_roi_role_from_display)
-        ttk.Button(buttons, text="添加当前 ROI 为一组", command=self.add_current_group).pack(side=tk.LEFT, padx=3)
-        ttk.Button(buttons, text="更新选中组", command=self.update_selected_group).pack(side=tk.LEFT, padx=3)
-        ttk.Button(buttons, text="载入选中组", command=self.load_selected_group).pack(side=tk.LEFT, padx=3)
-        ttk.Button(buttons, text="删除选中组", command=self.delete_selected_group).pack(side=tk.LEFT, padx=3)
-        ttk.Button(buttons, text="清除当前 ROI", command=self.clear_current_rois).pack(side=tk.LEFT, padx=3)
+        self.add_tooltip(role_box, "普通组只导出该组应变；若要导出泊松比，请把一组设为拉伸方向，另一组设为横向方向。")
+
+        self.add_group_button = ttk.Button(buttons, text="添加当前 ROI 为一组", command=self.add_current_group)
+        self.add_group_button.grid(row=1, column=4, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.add_group_button, "把当前 ROI1/ROI2 保存为一组虚拟引伸计；每组会独立追踪并导出应变曲线。")
+        self.update_group_button = ttk.Button(buttons, text="更新选中组", command=self.update_selected_group)
+        self.update_group_button.grid(row=2, column=0, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.update_group_button, "用当前 ROI1/ROI2 覆盖列表中选中的组；适合重画后修正已有组。")
+        self.load_group_button = ttk.Button(buttons, text="载入选中组", command=self.load_selected_group)
+        self.load_group_button.grid(row=2, column=1, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.load_group_button, "把列表中选中的 ROI 组载回当前编辑状态，便于检查、微调或更新。")
+        self.delete_group_button = ttk.Button(buttons, text="删除选中组", command=self.delete_selected_group)
+        self.delete_group_button.grid(row=2, column=2, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.delete_group_button, "从列表中删除选中的 ROI 组，不会删除已经导出的文件。")
+        self.clear_rois_button = ttk.Button(buttons, text="清除当前 ROI", command=self.clear_current_rois)
+        self.clear_rois_button.grid(row=2, column=3, padx=3, pady=2, sticky="w")
+        self.add_tooltip(self.clear_rois_button, "只清空当前正在编辑的 ROI1/ROI2；已经添加到列表中的 ROI 组不受影响。")
 
         columns = ("name", "role", "selected", "actual", "L0", "dx", "dy", "roi1", "roi2")
         self.group_tree = ttk.Treeview(group_frame, columns=columns, show="headings", height=4)
         for col, width in [
-            ("name", 90), ("role", 80), ("selected", 70), ("actual", 70), ("L0", 90),
-            ("dx", 90), ("dy", 90), ("roi1", 210), ("roi2", 210)
+            ("name", 70), ("role", 70), ("selected", 65), ("actual", 65), ("L0", 70),
+            ("dx", 65), ("dy", 65), ("roi1", 150), ("roi2", 150)
         ]:
             self.group_tree.heading(col, text=col)
-            self.group_tree.column(col, width=width, anchor="center")
+            self.group_tree.column(col, width=width, minwidth=50, anchor="center")
         self.group_tree.pack(fill=tk.X, pady=(6, 0))
         self.group_tree.bind("<Double-1>", lambda event: self.load_selected_group())
 
-        middle = ttk.Frame(main)
+        middle = ttk.Frame(left)
         middle.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
         image_frame = ttk.LabelFrame(middle, text="图像区：拖动画当前 ROI；绿色线为已添加的 ROI 组", padding=4)
@@ -1182,43 +1295,37 @@ class MultiROIGUI:
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
 
-        side = ttk.LabelFrame(middle, text="4. 分析与导出", padding=8)
+        side = ttk.LabelFrame(main, text="4. 分析与导出", padding=8)
         side.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
+        side.columnconfigure(0, weight=1)
 
         workflow_frame = ttk.LabelFrame(side, text="新手流程", padding=8)
-        workflow_frame.pack(fill=tk.X, pady=(0, 8))
-        workflow_steps = [
-            "1. 加载图像并确认分析范围",
-            "2. 绘制 ROI1/ROI2，添加至少一组 ROI",
-            "3. 按需设置轴向/横向角色和导出内容",
+        workflow_frame.pack(fill=tk.X, pady=(0, 6))
+        self.workflow_step_texts = [
+            "1. 选择图像文件夹和输出文件夹",
+            "2. 加载图像序列，确认预览帧",
+            "3. 设置起始/结束帧；起始帧也是参考帧",
+            "4. 画 ROI1/ROI2，对齐后添加 ROI 组",
+            "5. 确认导出内容，点击开始分析",
         ]
-        for step in workflow_steps:
-            ttk.Label(workflow_frame, text=step, style="StepTitle.TLabel", wraplength=360).pack(anchor="w", pady=1)
-        self.workflow_hint_var = tk.StringVar(value="下一步：确认 ROI 组已经添加，然后点击下方蓝色按钮开始分析。")
-        ttk.Label(workflow_frame, textvariable=self.workflow_hint_var, style="Hint.TLabel", justify=tk.LEFT, wraplength=360).pack(anchor="w", pady=(6, 0))
-
+        self.workflow_labels = []
+        for step in self.workflow_step_texts:
+            label = ttk.Label(workflow_frame, text=step, style="StepTitle.TLabel", wraplength=330)
+            label.pack(anchor="w", pady=1)
+            self.workflow_labels.append(label)
+        self.workflow_hint_var = tk.StringVar(
+            value="下一步：确认 ROI 在起始/参考帧上绘制；泊松比需要拉伸方向和横向方向各一组。"
+        )
         ttk.Label(
-            side,
-            text=f"Developed by {APP_DEVELOPER}\nDOI: {APP_DOI}",
-            foreground="#555555",
+            workflow_frame,
+            textvariable=self.workflow_hint_var,
+            style="Hint.TLabel",
             justify=tk.LEFT,
-        ).pack(anchor="w", pady=(6, 0))
-        ttk.Button(side, text="About / Citation / Usage Notice", command=self.show_usage_notice).pack(fill=tk.X, pady=(8, 0))
-
-        ttk.Separator(side).pack(fill=tk.X, pady=8)
-
-        export_frame = ttk.LabelFrame(side, text="导出内容", padding=6)
-        export_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Checkbutton(export_frame, text="Origin TXT（三列核心数据）", variable=self.export_origin_txt).pack(anchor="w")
-        ttk.Checkbutton(export_frame, text="工程应变 PNG", variable=self.export_engineering_png).pack(anchor="w")
-        ttk.Checkbutton(export_frame, text="QC 摘要 TXT", variable=self.export_qc_summary).pack(anchor="w")
-        ttk.Checkbutton(export_frame, text="完整 CSV（含 ROI 坐标历史）", variable=self.export_full_csv).pack(anchor="w")
-        ttk.Checkbutton(export_frame, text="相关系数曲线 PNG", variable=self.export_corr_plot).pack(anchor="w")
-        ttk.Checkbutton(export_frame, text="追踪 overlay 图片", variable=self.export_overlays).pack(anchor="w")
-        ttk.Checkbutton(export_frame, text="参数与详细接受统计", variable=self.export_parameters).pack(anchor="w")
+            wraplength=330,
+        ).pack(anchor="w", pady=(4, 0))
 
         action_frame = ttk.LabelFrame(side, text="准备好后", padding=10)
-        action_frame.pack(fill=tk.X, pady=(4, 8))
+        action_frame.pack(fill=tk.X, pady=(0, 6))
         self.start_button = ttk.Button(
             action_frame,
             text="开始分析并导出结果",
@@ -1226,24 +1333,64 @@ class MultiROIGUI:
             style="Primary.TButton",
         )
         self.start_button.pack(fill=tk.X)
+        self.add_tooltip(
+            self.start_button,
+            "点击后开始分析：程序会先检查图像、分析范围和 ROI 组；通过后批量追踪 ROI，并导出你勾选的 TXT/PNG/CSV 结果。",
+        )
         ttk.Label(
             action_frame,
             text="开始前请确认：图像已加载、分析范围正确、ROI 组已添加。",
             style="Hint.TLabel",
             justify=tk.LEFT,
-            wraplength=360,
-        ).pack(anchor="w", pady=(8, 0))
+            wraplength=330,
+        ).pack(anchor="w", pady=(5, 0))
+
+        export_frame = ttk.LabelFrame(side, text="导出内容", padding=6)
+        export_frame.pack(fill=tk.X, pady=(0, 6))
+        export_options = [
+            ("Origin TXT（三列核心数据）", self.export_origin_txt, "导出 Frame、EngineeringStrain、TrueStrain 三列文本，适合直接导入 Origin。"),
+            ("工程应变 PNG", self.export_engineering_png, "为每组 ROI 输出工程应变随帧数变化的曲线图。"),
+            ("QC 摘要 TXT", self.export_qc_summary, "输出接受帧、拒绝帧、自适应接受和相关系数等质量控制统计。"),
+            ("完整 CSV", self.export_full_csv, "输出完整追踪数据，包括 ROI 坐标历史；文件较大，主要用于复查或调试。"),
+            ("相关系数曲线 PNG", self.export_corr_plot, "输出每组 ROI 的相关系数曲线，用于判断追踪质量是否稳定。"),
+            ("追踪 overlay 图片", self.export_overlays, "按高级设置中的 overlay 间隔导出叠加图，方便肉眼检查 ROI 是否跟踪偏移。"),
+            ("参数与接受统计", self.export_parameters, "导出当前阈值、搜索半径、接受模式等参数记录，便于实验复现。"),
+        ]
+        self.export_checkbuttons = []
+        for idx, (text, variable, tooltip) in enumerate(export_options):
+            checkbutton = ttk.Checkbutton(export_frame, text=text, variable=variable)
+            checkbutton.grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, 10), pady=1)
+            self.add_tooltip(checkbutton, tooltip)
+            self.export_checkbuttons.append(checkbutton)
+        export_frame.columnconfigure(0, weight=1)
+        export_frame.columnconfigure(1, weight=1)
 
         status_frame = ttk.LabelFrame(side, text="运行状态", padding=6)
-        status_frame.pack(fill=tk.X, pady=(0, 8))
-        self.progress = ttk.Progressbar(status_frame, orient=tk.HORIZONTAL, mode="determinate", length=360)
+        status_frame.pack(fill=tk.X, pady=(0, 6))
+        self.progress = ttk.Progressbar(status_frame, orient=tk.HORIZONTAL, mode="determinate", length=330)
         self.progress.pack(fill=tk.X, pady=(0, 6))
 
         self.status_var = tk.StringVar(value="未加载图像")
-        ttk.Label(status_frame, textvariable=self.status_var, style="Hint.TLabel", wraplength=360).pack(anchor="w")
+        ttk.Label(status_frame, textvariable=self.status_var, style="Hint.TLabel", wraplength=330).pack(anchor="w")
 
-        self.log_text = tk.Text(side, width=56, height=22, wrap=tk.WORD)
+        self.log_text = tk.Text(side, width=48, height=8, wrap=tk.WORD)
         self.log_text.pack(fill=tk.BOTH, expand=True)
+
+        notice_frame = ttk.Frame(side)
+        notice_frame.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(
+            notice_frame,
+            text=f"Developed by {APP_DEVELOPER} | DOI: {APP_DOI}",
+            foreground="#555555",
+            justify=tk.LEFT,
+        ).pack(anchor="w")
+        self.usage_notice_button = ttk.Button(
+            notice_frame,
+            text="About / Citation / Usage Notice",
+            command=self.show_usage_notice,
+        )
+        self.usage_notice_button.pack(fill=tk.X, pady=(4, 0))
+        self.add_tooltip(self.usage_notice_button, "查看开发者署名、推荐引用格式、DOI 和授权使用说明。")
 
     def sync_strain_mode_from_display(self, event=None):
         label = self.strain_mode_display.get()

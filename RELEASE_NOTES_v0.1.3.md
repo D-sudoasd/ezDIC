@@ -14,7 +14,7 @@ DOI: [10.5281/zenodo.20222465](https://doi.org/10.5281/zenodo.20222465)
 - Added `AxialEngineeringStrain`, `TransverseEngineeringStrain`, and `PoissonRatio` columns to `strain_all_groups.txt` when axial/transverse roles are set.
 - Added `poisson_ratio.txt` and `poisson_ratio.png` exports when axial/transverse roles are set.
 - Kept failed tracking frames, missing strain values, and near-zero axial strain as `NaN` in Poisson-ratio output.
-- Improved the right-side GUI workflow area with a clearer beginner guide, a prominent start button, and a separate run-status section.
+- Improved the right-side GUI workflow area with a compact first-screen layout, a clearer five-step beginner guide, hover tips for key workflow buttons, a prominent start button, and a separate run-status section.
 - Disabled the start button during processing to reduce accidental duplicate runs.
 
 ## How to cite

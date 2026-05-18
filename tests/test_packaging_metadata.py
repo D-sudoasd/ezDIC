@@ -1,11 +1,27 @@
 from pathlib import Path
 
+import pytest
+
 import dic_virtual_extensometer_gui_v7_multi_roi_range as ezdic
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DOI = "10.5281/zenodo.20222465"
 DOI_URL = f"https://doi.org/{DOI}"
+
+
+@pytest.fixture(scope="module")
+def gui_app():
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = ezdic.MultiROIGUI(root)
+        root.update_idletasks()
+        yield root, app
+    finally:
+        root.destroy()
 
 
 def test_app_metadata_and_usage_notice_are_explicit():
@@ -22,45 +38,50 @@ def test_app_metadata_and_usage_notice_are_explicit():
     assert "redistribute, copy, forward, or share" in ezdic.USAGE_NOTICE
 
 
-def test_window_title_contains_developer():
-    import tkinter as tk
-
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        ezdic.MultiROIGUI(root)
-        title = root.title()
-    finally:
-        root.destroy()
+def test_window_title_contains_developer(gui_app):
+    root, _app = gui_app
+    title = root.title()
 
     assert title == "ezDIC v0.1.3 - Developed by Dr. Delun Gong - DOI: 10.5281/zenodo.20222465"
 
 
-def test_gui_initializes_poisson_role_selection():
-    import tkinter as tk
-
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        app = ezdic.MultiROIGUI(root)
-        assert app.roi_role.get() == "none"
-        assert app.roi_role_display.get() == "普通"
-    finally:
-        root.destroy()
+def test_gui_initializes_poisson_role_selection(gui_app):
+    _root, app = gui_app
+    assert app.roi_role.get() == "none"
+    assert app.roi_role_display.get() == "普通"
 
 
-def test_gui_emphasizes_start_analysis_action():
-    import tkinter as tk
+def test_gui_emphasizes_start_analysis_action(gui_app):
+    _root, app = gui_app
+    assert app.start_button.cget("text") == "开始分析并导出结果"
+    assert app.start_button.cget("style") == "Primary.TButton"
+    assert "下一步" in app.workflow_hint_var.get()
 
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        app = ezdic.MultiROIGUI(root)
-        assert app.start_button.cget("text") == "开始分析并导出结果"
-        assert app.start_button.cget("style") == "Primary.TButton"
-        assert "下一步" in app.workflow_hint_var.get()
-    finally:
-        root.destroy()
+
+def test_gui_initial_layout_fits_default_window_height(gui_app):
+    root, app = gui_app
+    root.update_idletasks()
+
+    assert root.winfo_reqheight() <= 980
+    assert int(app.log_text.cget("height")) <= 10
+
+
+def test_gui_beginner_workflow_and_key_button_tooltips_are_available(gui_app):
+    _root, app = gui_app
+
+    workflow_text = "\n".join(getattr(app, "workflow_step_texts", []))
+    assert "图像文件夹" in workflow_text
+    assert "ROI" in workflow_text
+    assert "开始分析" in workflow_text
+
+    tooltip_targets = [
+        ("load_images_button", getattr(app, "load_images_button", None), "加载"),
+        ("add_group_button", getattr(app, "add_group_button", None), "ROI"),
+        ("start_button", app.start_button, "开始分析"),
+    ]
+    for name, widget, expected_text in tooltip_targets:
+        assert widget is not None, f"{name} should be available for GUI tests"
+        assert expected_text in getattr(widget, "_tooltip_text", "")
 
 
 def test_release_support_files_exist_and_include_usage_limits():
