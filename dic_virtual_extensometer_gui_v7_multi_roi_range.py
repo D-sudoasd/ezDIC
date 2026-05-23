@@ -135,6 +135,17 @@ ROI_ROLE_VALUES = set(ROI_ROLE_VALUE_TO_LABEL)
 POISSON_MIN_ABS_AXIAL_ENGINEERING_STRAIN = 1e-6
 
 
+def open_output_folder(path):
+    folder = Path(path)
+    if not folder.exists():
+        raise RuntimeError(f"结果目录不存在：{folder}")
+    if not folder.is_dir():
+        raise RuntimeError(f"结果路径不是文件夹：{folder}")
+    if not hasattr(os, "startfile"):
+        raise RuntimeError("自动打开结果目录仅支持 Windows Explorer。")
+    os.startfile(str(folder))
+
+
 class ToolTip:
     def __init__(self, widget, text, wraplength=360, delay_ms=450):
         self.widget = widget
@@ -1689,6 +1700,13 @@ class MultiROIGUI:
         self.log_text.see(tk.END)
         self.root.update_idletasks()
 
+    def show_completion_and_open_output_folder(self, done_msg, output_dir):
+        messagebox.showinfo("完成", done_msg)
+        try:
+            open_output_folder(output_dir)
+        except Exception as exc:
+            self.log(f"无法自动打开结果目录：{exc}")
+
     def clear_sequence_dependent_state(self):
         self.roi1 = None
         self.roi2 = None
@@ -3036,18 +3054,25 @@ class MultiROIGUI:
         qc_level = summary["overall"]["qc_level"]
 
         path_log = "输出文件：\n" + "\n".join(str(p) for p in written_paths)
+        mean_export_note = ""
+        if export_origin_txt:
+            mean_export_note = (
+                "\n平均应变文件: core\\strain_mean_groups.txt"
+                "\n平均应变列也已写入: core\\strain_all_groups.txt"
+            )
         done_msg = (
             f"处理完成。\n"
             f"核心结果已保存到: {core_dir if (export_origin_txt or export_engineering_png or export_origin_opju) else output_dir}\n"
             f"QC 状态: {qc_level}\n"
             f"Rejected frames: {n_rejected}\n"
             f"Adaptive accepted frames: {n_adaptive}"
+            f"{mean_export_note}"
         )
 
         self.post_to_ui(lambda: self.progress.config(value=100))
         self.post_to_ui(lambda: self.status_var.set(f"处理完成，QC 状态：{qc_level}"))
         self.post_to_ui(lambda: self.log(done_msg + "\n" + path_log))
-        self.post_to_ui(lambda: messagebox.showinfo("完成", done_msg))
+        self.post_to_ui(lambda: self.show_completion_and_open_output_folder(done_msg, output_dir))
 
     def run(self):
         self.root.mainloop()

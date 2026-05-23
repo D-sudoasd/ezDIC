@@ -48,6 +48,27 @@ By default, ezDIC exports:
 
 Optional outputs such as an Origin OPJU project, full CSV files, correlation plots, overlays, and parameter summaries are disabled by default and can be enabled in the export options.
 
+Mean Strain Export / 平均应变导出
+--------------------------------
+勾选 Origin TXT（三列核心数据）后，平均应变会随核心结果一起导出，不需要单独勾选其他选项。
+
+平均应变文件位置：
+- core/strain_mean_groups.txt
+
+同时，平均应变列也会追加到：
+- core/strain_all_groups.txt
+
+列名规则：
+- MeanEngineeringStrain_<role>_<mode>
+- MeanTrueStrain_<role>_<mode>
+- StdEngineeringStrain_<role>_<mode>
+- SemEngineeringStrain_<role>_<mode>
+- ValidGroupCount_<role>_<mode>
+
+注意：程序只会把相同 role 和相同 actual_mode 的 ROI 组逐帧求平均。例如，两条普通纵向引伸计会合成 MeanEngineeringStrain_none_y；如果一条是 y、一条是 x，或者一条 role 是 axial、另一条是 none，就不会合成同一条平均曲线。
+
+处理完成后，ezDIC 会自动打开输出根目录。该目录下通常包含 core、qc 和 optional 子目录。
+
 Origin OPJU Export
 ------------------
 The Origin OPJU option writes the core result tables directly into ezDIC_results.opju. It requires Windows, OriginPro 2021+, a valid local OriginPro license, and the originpro Python package. If OriginPro or originpro is unavailable, ezDIC keeps the TXT/PNG/CSV results and reports only the OPJU export failure.

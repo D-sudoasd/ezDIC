@@ -376,6 +376,87 @@ def test_origin_opju_failure_does_not_cancel_existing_exports(gui_app, tmp_path,
     assert not (tmp_path / "out" / "core" / "ezDIC_results.opju").exists()
 
 
+def test_processing_completion_mentions_mean_export_and_opens_output_root(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(app, "post_to_ui", lambda callback: callback())
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+
+    messages = []
+    opened_paths = []
+    monkeypatch.setattr(
+        ezdic.messagebox,
+        "showinfo",
+        lambda title, message: messages.append((title, message)),
+    )
+    monkeypatch.setattr(
+        ezdic,
+        "open_output_folder",
+        lambda path: opened_paths.append(Path(path)),
+        raising=False,
+    )
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    for idx in range(3):
+        arr = np.full((100, 160), 30, dtype=np.uint8)
+        arr[30:60, 20 + idx:50 + idx] = patch
+        arr[30:60, 90 + idx:120 + idx] = patch
+        ok, data = cv2.imencode(".png", arr)
+        assert ok
+        data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
+
+    output_dir = tmp_path / "out"
+    app.image_folder.set(str(image_dir))
+    app.output_folder.set(str(output_dir))
+    app.load_first_image()
+    for name, y in [("G01", 30), ("G02", 64)]:
+        app.group_name_var.set(name)
+        app.roi1 = (20, y, 30, 30)
+        app.roi2 = (90, y, 30, 30)
+        app.strain_mode.set("x")
+        app.sync_strain_mode_display()
+        app.add_current_group()
+
+    app.process_images(app.build_processing_settings())
+
+    assert (output_dir / "core" / "strain_mean_groups.txt").exists()
+    assert messages
+    assert messages[-1][0] == "完成"
+    assert "平均应变文件: " in messages[-1][1]
+    assert "core\\strain_mean_groups.txt" in messages[-1][1]
+    assert "strain_all_groups.txt" in messages[-1][1]
+    assert opened_paths == [output_dir]
+
+
+def test_completion_folder_open_failure_is_logged(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+
+    messages = []
+    log_messages = []
+    monkeypatch.setattr(
+        ezdic.messagebox,
+        "showinfo",
+        lambda title, message: messages.append((title, message)),
+    )
+    monkeypatch.setattr(
+        ezdic,
+        "open_output_folder",
+        lambda path: (_ for _ in ()).throw(RuntimeError("explorer failed")),
+        raising=False,
+    )
+    monkeypatch.setattr(app, "log", lambda message: log_messages.append(message))
+
+    app.show_completion_and_open_output_folder("处理完成。", tmp_path / "out")
+
+    assert messages == [("完成", "处理完成。")]
+    assert len(log_messages) == 1
+    assert "无法自动打开结果目录" in log_messages[0]
+    assert "explorer failed" in log_messages[0]
+
+
 def test_release_support_files_exist_and_include_usage_limits():
     notice = ROOT / "NOTICE_Attribution_and_Usage.txt"
     readme = ROOT / "README_使用说明.txt"
