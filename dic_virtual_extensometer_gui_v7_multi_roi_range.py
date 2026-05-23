@@ -32,6 +32,7 @@ import os
 import re
 import math
 import glob
+import queue
 import threading
 import traceback
 from pathlib import Path
@@ -56,6 +57,7 @@ APP_DEVELOPER = "Dr. Delun Gong"
 APP_DOI = "10.5281/zenodo.20222465"
 APP_DOI_URL = f"https://doi.org/{APP_DOI}"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION} - Developed by {APP_DEVELOPER} - DOI: {APP_DOI}"
+ORIGIN_OPJU_FILENAME = "ezDIC_results.opju"
 
 CITATION_TEXT = f"""Recommended citation:
 
@@ -615,6 +617,18 @@ def _format_origin_float(value):
     return f"{float(value):.8f}"
 
 
+def _engineering_to_true(value):
+    if pd.isna(value) or not np.isfinite(float(value)) or (1.0 + float(value)) <= 0:
+        return np.nan
+    return math.log1p(float(value))
+
+
+def _format_origin_value(column, value):
+    if column.startswith("ValidGroupCount_"):
+        return "NaN" if pd.isna(value) else str(int(value))
+    return _format_origin_float(value)
+
+
 def normalize_roi_role(role):
     role = str(role or "none").strip()
     if role not in ROI_ROLE_VALUES:
@@ -632,20 +646,30 @@ def get_poisson_role_groups(groups):
     return axial, transverse
 
 
+def _validate_single_actual_mode(groups, role_label):
+    modes = sorted({str(g.get("actual_mode", "unknown") or "unknown").strip() for g in groups})
+    if len(modes) > 1:
+        raise RuntimeError(f"{role_label} ROI 组的 actual_mode 必须一致；当前为 {', '.join(modes)}。")
+
+
 def validate_poisson_role_groups(groups):
     if not poisson_roles_are_configured(groups):
         return False
 
     axial, transverse = get_poisson_role_groups(groups)
     errors = []
-    if len(axial) != 1:
-        errors.append(f"拉伸方向 ROI 组必须且只能有 1 个；当前为 {len(axial)} 个。")
-    if len(transverse) != 1:
-        errors.append(f"横向方向 ROI 组必须且只能有 1 个；当前为 {len(transverse)} 个。")
+    if len(axial) < 1:
+        errors.append(f"拉伸方向 ROI 组必须至少有 1 个；当前为 {len(axial)} 个。")
+    if len(transverse) < 1:
+        errors.append(f"横向方向 ROI 组必须至少有 1 个；当前为 {len(transverse)} 个。")
     if errors:
         raise RuntimeError("\n".join(errors))
-    if axial[0].get("name") == transverse[0].get("name"):
+    axial_names = {g.get("name") for g in axial}
+    transverse_names = {g.get("name") for g in transverse}
+    if axial_names & transverse_names:
         raise RuntimeError("同一个 ROI 组不能同时作为拉伸方向和横向方向。")
+    _validate_single_actual_mode(axial, "拉伸方向")
+    _validate_single_actual_mode(transverse, "横向方向")
     return True
 
 
@@ -659,12 +683,7 @@ def build_core_strain_table(gdf):
     frames = pd.to_numeric(gdf[frame_col], errors="coerce")
     eng = pd.to_numeric(gdf["engineering_strain"], errors="coerce")
 
-    true_values = []
-    for value in eng:
-        if pd.isna(value) or not np.isfinite(float(value)) or (1.0 + float(value)) <= 0:
-            true_values.append(np.nan)
-        else:
-            true_values.append(math.log1p(float(value)))
+    true_values = [_engineering_to_true(value) for value in eng]
 
     out = pd.DataFrame(
         {
@@ -711,15 +730,88 @@ def _group_engineering_strain_table(df, group_name, output_column):
     ).reset_index(drop=True)
 
 
+def _frame_table(df):
+    frame_col = _frame_column(df)
+    frames = pd.to_numeric(df[frame_col], errors="coerce").dropna().drop_duplicates().sort_values()
+    return pd.DataFrame({"Frame": frames.astype("Int64")}).reset_index(drop=True)
+
+
+def _mean_group_key(group):
+    role = normalize_roi_role(group.get("role", "none"))
+    actual_mode = str(group.get("actual_mode", "unknown") or "unknown").strip()
+    return safe_name(f"{role}_{actual_mode}")
+
+
+def _mean_group_specs(groups):
+    specs = {}
+    for group in groups or []:
+        key = _mean_group_key(group)
+        if key not in specs:
+            specs[key] = {"key": key, "groups": []}
+        specs[key]["groups"].append(group)
+    return list(specs.values())
+
+
+def _mean_engineering_strain_table_for_groups(df, groups, output_column):
+    out = _frame_table(df)
+    if out.empty:
+        return pd.DataFrame(columns=["Frame", output_column])
+
+    strain_cols = []
+    merged = out.copy()
+    for idx, group in enumerate(groups, start=1):
+        col = f"__strain_{idx}"
+        group_table = _group_engineering_strain_table(df, group.get("name"), col)
+        merged = pd.merge(merged, group_table, on="Frame", how="left")
+        strain_cols.append(col)
+
+    if not strain_cols:
+        merged[output_column] = np.nan
+    else:
+        strains = merged[strain_cols].apply(pd.to_numeric, errors="coerce")
+        counts = strains.notna().sum(axis=1)
+        merged[output_column] = strains.mean(axis=1, skipna=True).where(counts > 0, np.nan)
+
+    return merged[["Frame", output_column]].reset_index(drop=True)
+
+
+def build_mean_strain_table(df, groups):
+    out = _frame_table(df)
+    if out.empty or not groups:
+        return out
+
+    for spec in _mean_group_specs(groups):
+        key = spec["key"]
+        merged = out.copy()
+        strain_cols = []
+        for idx, group in enumerate(spec["groups"], start=1):
+            col = f"__{key}_{idx}"
+            group_table = _group_engineering_strain_table(df, group.get("name"), col)
+            merged = pd.merge(merged, group_table, on="Frame", how="left")
+            strain_cols.append(col)
+
+        strains = merged[strain_cols].apply(pd.to_numeric, errors="coerce")
+        counts = strains.notna().sum(axis=1)
+        mean = strains.mean(axis=1, skipna=True).where(counts > 0, np.nan)
+        std = strains.std(axis=1, skipna=True, ddof=1).where(counts >= 2, np.nan)
+        sem = (std / np.sqrt(counts.astype(float))).where(counts >= 2, np.nan)
+
+        out[f"MeanEngineeringStrain_{key}"] = mean
+        out[f"MeanTrueStrain_{key}"] = mean.apply(_engineering_to_true)
+        out[f"StdEngineeringStrain_{key}"] = std
+        out[f"SemEngineeringStrain_{key}"] = sem
+        out[f"ValidGroupCount_{key}"] = counts.astype(int)
+
+    return out.reset_index(drop=True)
+
+
 def build_poisson_ratio_table(df, groups, min_abs_axial=POISSON_MIN_ABS_AXIAL_ENGINEERING_STRAIN):
     if not validate_poisson_role_groups(groups):
         raise RuntimeError("请先设置 1 个拉伸方向 ROI 组和 1 个横向方向 ROI 组。")
     axial_groups, transverse_groups = get_poisson_role_groups(groups)
-    axial_name = axial_groups[0]["name"]
-    transverse_name = transverse_groups[0]["name"]
 
-    axial = _group_engineering_strain_table(df, axial_name, "AxialEngineeringStrain")
-    transverse = _group_engineering_strain_table(df, transverse_name, "TransverseEngineeringStrain")
+    axial = _mean_engineering_strain_table_for_groups(df, axial_groups, "AxialEngineeringStrain")
+    transverse = _mean_engineering_strain_table_for_groups(df, transverse_groups, "TransverseEngineeringStrain")
     merged = pd.merge(axial, transverse, on="Frame", how="outer").sort_values("Frame").reset_index(drop=True)
 
     axial_strain = pd.to_numeric(merged["AxialEngineeringStrain"], errors="coerce").astype(float)
@@ -760,6 +852,12 @@ def build_all_groups_strain_table(df, groups=None):
         merged = pd.merge(merged, table, on="Frame", how="outer")
     merged = merged.sort_values("Frame").reset_index(drop=True)
 
+    if groups is not None:
+        mean_table = build_mean_strain_table(df, groups)
+        if len(mean_table.columns) > 1:
+            merged = pd.merge(merged, mean_table, on="Frame", how="outer")
+            merged = merged.sort_values("Frame").reset_index(drop=True)
+
     if groups is not None and poisson_roles_are_configured(groups):
         poisson = build_poisson_ratio_table(df, groups)
         merged = pd.merge(merged, poisson, on="Frame", how="outer")
@@ -781,7 +879,24 @@ def write_all_groups_origin_txt(df, path, groups=None):
                 if col == "Frame":
                     values.append("NaN" if pd.isna(row[col]) else str(int(row[col])))
                 else:
-                    values.append(_format_origin_float(row[col]))
+                    values.append(_format_origin_value(col, row[col]))
+            f.write("\t".join(values) + "\n")
+
+
+def write_mean_groups_origin_txt(df, groups, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table = build_mean_strain_table(df, groups)
+
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\t".join(table.columns) + "\n")
+        for _, row in table.iterrows():
+            values = []
+            for col in table.columns:
+                if col == "Frame":
+                    values.append("NaN" if pd.isna(row[col]) else str(int(row[col])))
+                else:
+                    values.append(_format_origin_value(col, row[col]))
             f.write("\t".join(values) + "\n")
 
 
@@ -800,6 +915,64 @@ def write_poisson_ratio_txt(df, groups, path):
                 f"{_format_origin_float(row['TransverseEngineeringStrain'])}\t"
                 f"{_format_origin_float(row['PoissonRatio'])}\n"
             )
+
+
+def build_origin_project_tables(df, groups):
+    groups = list(groups or [])
+    tables = []
+
+    for group in groups:
+        gname = group.get("name")
+        sg = safe_name(gname)
+        gdf = df[df["group"] == gname].copy()
+        tables.append((f"strain_{sg}", build_core_strain_table(gdf)))
+
+    tables.append(("strain_all_groups", build_all_groups_strain_table(df, groups)))
+
+    mean_table = build_mean_strain_table(df, groups)
+    if len(mean_table.columns) > 1:
+        tables.append(("strain_mean_groups", mean_table))
+
+    if poisson_roles_are_configured(groups):
+        tables.append(("poisson_ratio", build_poisson_ratio_table(df, groups)))
+
+    return tables
+
+
+def _load_originpro_module():
+    try:
+        import originpro as op
+    except ImportError as exc:
+        raise RuntimeError(
+            "无法导入 originpro。请在 Windows + OriginPro 2021+ 环境中安装 originpro Python 包后再导出 OPJU。"
+        ) from exc
+    return op
+
+
+def write_origin_opju_project(df, groups, path, origin_module=None):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    op = origin_module if origin_module is not None else _load_originpro_module()
+
+    try:
+        op.new(asksave=True)
+        for table_name, table in build_origin_project_tables(df, groups):
+            worksheet = op.new_sheet("w", lname=table_name)
+            if worksheet is None:
+                raise RuntimeError(f"无法创建 Origin worksheet：{table_name}")
+            worksheet.from_df(table)
+
+        if not op.save(str(path)):
+            raise RuntimeError(f"保存 Origin OPJU 项目失败：{path}")
+    except RuntimeError as exc:
+        message = str(exc)
+        if message.startswith("保存 Origin OPJU 项目失败") or message.startswith("无法"):
+            raise
+        raise RuntimeError(f"生成 Origin OPJU 项目失败：{exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"生成 Origin OPJU 项目失败：{exc}") from exc
+
+    return path
 
 
 def plot_engineering_strain(gdf, path, title):
@@ -837,6 +1010,42 @@ def plot_engineering_strain(gdf, path, title):
     plt.xlabel("Frame")
     plt.ylabel("Engineering strain")
     plt.title(title)
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(path, dpi=300)
+    plt.close()
+
+
+def plot_all_groups_engineering_strain(df, groups, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    plt.figure(figsize=(8, 5))
+    for group in groups:
+        gname = group["name"]
+        gdf = df[df["group"] == gname]
+        if gdf.empty:
+            continue
+        plt.plot(gdf["frame_global_1based"], gdf["engineering_strain"], linewidth=1, alpha=0.55, label=gname)
+
+    mean_table = build_mean_strain_table(df, groups)
+    if not mean_table.empty:
+        frame = mean_table["Frame"].astype(float)
+        for col in [c for c in mean_table.columns if c.startswith("MeanEngineeringStrain_")]:
+            key = col.replace("MeanEngineeringStrain_", "", 1)
+            mean = pd.to_numeric(mean_table[col], errors="coerce").astype(float)
+            std_col = f"StdEngineeringStrain_{key}"
+            plt.plot(frame, mean, linewidth=2.4, label=f"Mean {key}")
+            if std_col in mean_table.columns:
+                std = pd.to_numeric(mean_table[std_col], errors="coerce").astype(float)
+                finite = mean.notna() & std.notna() & np.isfinite(mean) & np.isfinite(std)
+                if finite.any():
+                    plt.fill_between(frame[finite], mean[finite] - std[finite], mean[finite] + std[finite], alpha=0.12)
+
+    plt.xlabel("Frame")
+    plt.ylabel("Engineering strain")
+    plt.title("Engineering strain - all ROI groups")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
@@ -1024,6 +1233,7 @@ class MultiROIGUI:
         self.advanced_visible = tk.BooleanVar(value=False)
 
         self.export_origin_txt = tk.BooleanVar(value=True)
+        self.export_origin_opju = tk.BooleanVar(value=False)
         self.export_engineering_png = tk.BooleanVar(value=True)
         self.export_qc_summary = tk.BooleanVar(value=True)
         self.export_full_csv = tk.BooleanVar(value=False)
@@ -1032,6 +1242,7 @@ class MultiROIGUI:
         self.export_parameters = tk.BooleanVar(value=False)
 
         self.image_paths = []
+        self.loaded_image_folder = None
         self.first_raw = None
         self.first_img8 = None  # 当前预览帧的 8-bit 图像，用于显示、画 ROI、纹理检查
         self.display_img = None
@@ -1055,6 +1266,7 @@ class MultiROIGUI:
 
         self.is_processing = False
         self.tooltips = []
+        self.ui_queue = queue.Queue()
 
         for var in [
             self.search_radius,
@@ -1071,6 +1283,8 @@ class MultiROIGUI:
 
         self.configure_ui_style()
         self.build_ui()
+        self.configure_final_window_limits()
+        self.start_ui_queue_polling()
 
     # ---------- UI ----------
 
@@ -1082,9 +1296,25 @@ class MultiROIGUI:
         self.root.geometry(f"{width}x{height}")
         self.root.minsize(1180, 760)
 
+    def configure_final_window_limits(self):
+        self.root.update_idletasks()
+        self.root.minsize(self.root.winfo_reqwidth(), self.root.winfo_reqheight())
+
     def add_tooltip(self, widget, text):
         self.tooltips.append(ToolTip(widget, text))
         return widget
+
+    def get_int_setting(self, var, label):
+        try:
+            return int(var.get())
+        except (tk.TclError, TypeError, ValueError):
+            raise RuntimeError(f"{label}必须是整数。")
+
+    def get_float_setting(self, var, label):
+        try:
+            return float(var.get())
+        except (tk.TclError, TypeError, ValueError):
+            raise RuntimeError(f"{label}必须是数字。")
 
     def configure_ui_style(self):
         self.style = ttk.Style(self.root)
@@ -1349,6 +1579,7 @@ class MultiROIGUI:
         export_frame.pack(fill=tk.X, pady=(0, 6))
         export_options = [
             ("Origin TXT（三列核心数据）", self.export_origin_txt, "导出 Frame、EngineeringStrain、TrueStrain 三列文本，适合直接导入 Origin。"),
+            ("Origin OPJU 项目（直接导入 OriginPro）", self.export_origin_opju, "启动/连接 OriginPro，把核心数据表写入工作簿并保存为 ezDIC_results.opju；需要 OriginPro 2021+ 和 originpro 包。"),
             ("工程应变 PNG", self.export_engineering_png, "为每组 ROI 输出工程应变随帧数变化的曲线图。"),
             ("QC 摘要 TXT", self.export_qc_summary, "输出接受帧、拒绝帧、自适应接受和相关系数等质量控制统计。"),
             ("完整 CSV", self.export_full_csv, "输出完整追踪数据，包括 ROI 坐标历史；文件较大，主要用于复查或调试。"),
@@ -1458,6 +1689,17 @@ class MultiROIGUI:
         self.log_text.see(tk.END)
         self.root.update_idletasks()
 
+    def clear_sequence_dependent_state(self):
+        self.roi1 = None
+        self.roi2 = None
+        self.current_roi_index = 1
+        self.drag_start = None
+        self.temp_rect_id = None
+        self.roi_groups.clear()
+        self.next_group_idx = 1
+        self.group_name_var.set("")
+        self.refresh_group_tree()
+
     def select_image_folder(self):
         folder = filedialog.askdirectory(title="选择 TIF 图片文件夹")
         if folder:
@@ -1481,26 +1723,58 @@ class MultiROIGUI:
             messagebox.showwarning("缺少文件夹", "请先选择图像文件夹。")
             return
 
-        self.image_paths = collect_images(folder)
-        if not self.image_paths:
+        new_image_paths = collect_images(folder)
+        if not new_image_paths:
             messagebox.showerror("未找到图像", "该文件夹中没有找到 tif/tiff/png/jpg/bmp 图像。")
             return
 
-        n = len(self.image_paths)
+        old_state = {
+            "image_paths": self.image_paths,
+            "loaded_image_folder": self.loaded_image_folder,
+            "first_raw": self.first_raw,
+            "first_img8": self.first_img8,
+            "display_img": self.display_img,
+            "display_scale": self.display_scale,
+            "photo": self.photo,
+            "preview": self.preview_frame_1based.get(),
+            "start": self.start_frame_1based.get(),
+            "end": self.end_frame_1based.get(),
+            "current_preview_index": self.current_preview_index,
+        }
+
+        n = len(new_image_paths)
+        folder_key = os.path.normcase(os.path.abspath(folder))
 
         # 如果用户还没设置范围，默认 1 到最后一帧。
         if self.end_frame_1based.get() <= 1:
             self.end_frame_1based.set(n)
 
+        self.image_paths = new_image_paths
         self.preview_frame_1based.set(max(1, min(self.preview_frame_1based.get(), n)))
         self.start_frame_1based.set(max(1, min(self.start_frame_1based.get(), n)))
         self.end_frame_1based.set(max(1, min(self.end_frame_1based.get(), n)))
 
         try:
             self.load_preview_frame(self.preview_frame_1based.get() - 1)
+            if self.loaded_image_folder != folder_key:
+                self.clear_sequence_dependent_state()
+                self.loaded_image_folder = folder_key
+                self.show_image()
             self.log(f"找到 {n} 张图像。")
             self.log(f"当前预览：第 {self.current_preview_index + 1} 帧 / 共 {n} 帧")
         except Exception as exc:
+            self.image_paths = old_state["image_paths"]
+            self.loaded_image_folder = old_state["loaded_image_folder"]
+            self.first_raw = old_state["first_raw"]
+            self.first_img8 = old_state["first_img8"]
+            self.display_img = old_state["display_img"]
+            self.display_scale = old_state["display_scale"]
+            self.photo = old_state["photo"]
+            self.preview_frame_1based.set(old_state["preview"])
+            self.start_frame_1based.set(old_state["start"])
+            self.end_frame_1based.set(old_state["end"])
+            self.current_preview_index = old_state["current_preview_index"]
+            self.show_image()
             messagebox.showerror("加载失败", str(exc))
             self.log(traceback.format_exc())
 
@@ -1533,7 +1807,7 @@ class MultiROIGUI:
             return
 
         try:
-            idx = int(self.preview_frame_1based.get()) - 1
+            idx = self.get_int_setting(self.preview_frame_1based, "预览帧") - 1
             self.load_preview_frame(idx)
         except Exception as exc:
             messagebox.showerror("预览失败", str(exc))
@@ -1599,8 +1873,8 @@ class MultiROIGUI:
             raise RuntimeError("请先加载图像序列。")
 
         n = len(self.image_paths)
-        s = int(self.start_frame_1based.get()) - 1
-        e = int(self.end_frame_1based.get()) - 1
+        s = self.get_int_setting(self.start_frame_1based, "起始帧") - 1
+        e = self.get_int_setting(self.end_frame_1based, "结束帧") - 1
 
         s = max(0, min(s, n - 1))
         e = max(0, min(e, n - 1))
@@ -2018,35 +2292,66 @@ class MultiROIGUI:
             raise RuntimeError("请先至少添加一组 ROI。")
         if not self.output_folder.get().strip():
             raise RuntimeError("请设置输出文件夹。")
+        output_path = Path(self.output_folder.get().strip())
+        if output_path.exists() and not output_path.is_dir():
+            raise RuntimeError(f"输出路径已存在但不是文件夹：{output_path}")
+        if not any(
+            var.get()
+            for var in [
+                self.export_origin_txt,
+                self.export_origin_opju,
+                self.export_engineering_png,
+                self.export_qc_summary,
+                self.export_full_csv,
+                self.export_corr_plot,
+                self.export_overlays,
+                self.export_parameters,
+            ]
+        ):
+            raise RuntimeError("请至少选择一种导出内容。")
 
         start_idx, end_idx = self.get_analysis_indices()
         if end_idx <= start_idx:
             raise RuntimeError("分析范围至少应包含两帧。")
 
-        if self.search_radius.get() <= 0:
+        search_radius = self.get_int_setting(self.search_radius, "搜索半径")
+        overlay_every = self.get_int_setting(self.overlay_every, "overlay 保存间隔")
+        hard_corr = self.get_float_setting(self.hard_corr, "硬相关阈值")
+        soft_corr = self.get_float_setting(self.soft_corr, "软相关下限")
+        template_alpha = self.get_float_setting(self.template_alpha, "模板跟随系数")
+        fb_tolerance = self.get_float_setting(self.fb_tolerance_px, "FB 容差")
+        max_saturated_frac = self.get_float_setting(self.max_saturated_frac, "最大近黑/近白比例")
+
+        if search_radius <= 0:
             raise RuntimeError("搜索半径必须 > 0。")
-        if self.export_overlays.get() and self.overlay_every.get() <= 0:
+        if self.export_overlays.get() and overlay_every <= 0:
             raise RuntimeError("overlay 保存间隔必须 > 0。")
-        if not (-1 <= self.hard_corr.get() <= 1):
+        if not (-1 <= hard_corr <= 1):
             raise RuntimeError("硬相关阈值应在 -1 到 1 之间。")
-        if not (-1 <= self.soft_corr.get() <= 1):
+        if not (-1 <= soft_corr <= 1):
             raise RuntimeError("软相关下限应在 -1 到 1 之间。")
-        if self.soft_corr.get() > self.hard_corr.get():
+        if soft_corr > hard_corr:
             raise RuntimeError("软相关下限不能高于硬相关阈值。")
-        if not (0 <= self.template_alpha.get() <= 1):
+        if not (0 <= template_alpha <= 1):
             raise RuntimeError("模板跟随系数应在 0 到 1 之间。")
-        if self.fb_tolerance_px.get() <= 0:
+        if fb_tolerance <= 0:
             raise RuntimeError("FB 容差必须 > 0。")
-        if not (0 <= self.max_saturated_frac.get() <= 1):
+        if not (0 <= max_saturated_frac <= 1):
             raise RuntimeError("最大近黑/近白比例应在 0 到 1 之间。")
 
         if self.max_frame_strain_jump.get().strip():
-            jump = float(self.max_frame_strain_jump.get().strip())
+            try:
+                jump = float(self.max_frame_strain_jump.get().strip())
+            except ValueError:
+                raise RuntimeError("单帧应变突变上限必须是数字，或者留空禁用。")
             if jump <= 0:
                 raise RuntimeError("单帧应变突变上限必须 > 0，或者留空禁用。")
 
         if self.pixel_size_mm.get().strip():
-            pix = float(self.pixel_size_mm.get().strip())
+            try:
+                pix = float(self.pixel_size_mm.get().strip())
+            except ValueError:
+                raise RuntimeError("像素尺寸必须是数字，或者留空。")
             if pix <= 0:
                 raise RuntimeError("像素尺寸必须 > 0，或者留空。")
 
@@ -2077,6 +2382,67 @@ class MultiROIGUI:
             if not messagebox.askyesno("L0 过小警告", msg):
                 raise RuntimeError("用户取消：某些 ROI 组 L0 太小。")
 
+    def build_processing_settings(self):
+        start_idx, end_idx = self.get_analysis_indices()
+        max_frame_jump = None
+        if self.max_frame_strain_jump.get().strip():
+            max_frame_jump = float(self.max_frame_strain_jump.get().strip())
+
+        pixel_size_mm = None
+        if self.pixel_size_mm.get().strip():
+            pixel_size_mm = float(self.pixel_size_mm.get().strip())
+
+        return {
+            "output_dir": Path(self.output_folder.get().strip()),
+            "image_paths": list(self.image_paths),
+            "roi_groups": [dict(group) for group in self.roi_groups],
+            "start_idx": start_idx,
+            "end_idx": end_idx,
+            "search_radius_base": self.get_int_setting(self.search_radius, "搜索半径"),
+            "hard_corr": self.get_float_setting(self.hard_corr, "硬相关阈值"),
+            "soft_corr": self.get_float_setting(self.soft_corr, "软相关下限"),
+            "enable_adaptive": bool(self.enable_adaptive.get()),
+            "use_prev_frame_template": bool(self.use_prev_frame_template.get()),
+            "template_alpha": self.get_float_setting(self.template_alpha, "模板跟随系数"),
+            "max_frame_jump": max_frame_jump,
+            "enable_fb_check": bool(self.enable_fb_check.get()),
+            "fb_tolerance": self.get_float_setting(self.fb_tolerance_px, "FB 容差"),
+            "pixel_size_mm": pixel_size_mm,
+            "overlay_every": self.get_int_setting(self.overlay_every, "overlay 保存间隔"),
+            "export_origin_txt": bool(self.export_origin_txt.get()),
+            "export_origin_opju": bool(self.export_origin_opju.get()),
+            "export_engineering_png": bool(self.export_engineering_png.get()),
+            "export_qc_summary": bool(self.export_qc_summary.get()),
+            "export_full_csv": bool(self.export_full_csv.get()),
+            "export_corr_plot": bool(self.export_corr_plot.get()),
+            "export_overlays": bool(self.export_overlays.get()),
+            "export_parameters": bool(self.export_parameters.get()),
+            "image_folder": self.image_folder.get(),
+            "tracking_preset": self.tracking_preset.get(),
+        }
+
+    def post_to_ui(self, callback):
+        self.ui_queue.put(callback)
+        return True
+
+    def start_ui_queue_polling(self):
+        try:
+            self.root.after(50, self.drain_ui_queue)
+        except (RuntimeError, tk.TclError):
+            pass
+
+    def drain_ui_queue(self):
+        while True:
+            try:
+                callback = self.ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                callback()
+            except Exception:
+                traceback.print_exc()
+        self.start_ui_queue_polling()
+
     # ---------- 批量处理 ----------
 
     def start_processing(self):
@@ -2086,6 +2452,7 @@ class MultiROIGUI:
 
         try:
             self.validate_before_processing()
+            settings = self.build_processing_settings()
         except Exception as exc:
             messagebox.showerror("参数错误", str(exc))
             return
@@ -2095,24 +2462,26 @@ class MultiROIGUI:
         if hasattr(self, "start_button"):
             self.start_button.config(state=tk.DISABLED)
 
-        thread = threading.Thread(target=self.process_images_thread, daemon=True)
+        thread = threading.Thread(target=self.process_images_thread, args=(settings,), daemon=True)
         thread.start()
 
-    def process_images_thread(self):
+    def process_images_thread(self, settings):
         try:
-            self.process_images()
+            self.process_images(settings)
         except Exception as exc:
-            self.root.after(0, lambda: messagebox.showerror("处理失败", str(exc)))
-            self.root.after(0, lambda: self.log(traceback.format_exc()))
+            self.post_to_ui(lambda: messagebox.showerror("处理失败", str(exc)))
+            self.post_to_ui(lambda: self.log(traceback.format_exc()))
         finally:
             self.is_processing = False
             if hasattr(self, "start_button"):
-                self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+                self.post_to_ui(lambda: self.start_button.config(state=tk.NORMAL))
 
-    def init_group_states(self, first_img8):
+    def init_group_states(self, first_img8, groups=None):
+        if groups is None:
+            groups = self.roi_groups
         states = []
 
-        for group in self.roi_groups:
+        for group in groups:
             r1 = tuple(group["roi1"])
             r2 = tuple(group["roi2"])
             actual_mode = group["actual_mode"]
@@ -2370,44 +2739,44 @@ class MultiROIGUI:
 
         return row, overlay_info
 
-    def process_images(self):
-        output_dir = Path(self.output_folder.get().strip())
+    def process_images(self, settings=None):
+        if settings is None:
+            settings = self.build_processing_settings()
+
+        output_dir = settings["output_dir"]
         output_dir.mkdir(parents=True, exist_ok=True)
         core_dir = output_dir / "core"
         qc_dir = output_dir / "qc"
         optional_dir = output_dir / "optional"
 
-        start_idx, end_idx = self.get_analysis_indices()
-        image_paths_run = self.image_paths[start_idx:end_idx + 1]
+        start_idx = settings["start_idx"]
+        end_idx = settings["end_idx"]
+        image_paths = settings["image_paths"]
+        image_paths_run = image_paths[start_idx:end_idx + 1]
+        roi_groups = settings["roi_groups"]
 
-        search_radius_base = int(self.search_radius.get())
-        hard_corr = float(self.hard_corr.get())
-        soft_corr = float(self.soft_corr.get())
+        search_radius_base = settings["search_radius_base"]
+        hard_corr = settings["hard_corr"]
+        soft_corr = settings["soft_corr"]
 
-        enable_adaptive = bool(self.enable_adaptive.get())
-        use_prev_frame_template = bool(self.use_prev_frame_template.get())
-        template_alpha = float(self.template_alpha.get())
+        enable_adaptive = settings["enable_adaptive"]
+        use_prev_frame_template = settings["use_prev_frame_template"]
+        template_alpha = settings["template_alpha"]
 
-        enable_fb_check = bool(self.enable_fb_check.get())
-        fb_tolerance = float(self.fb_tolerance_px.get())
+        max_frame_jump = settings["max_frame_jump"]
+        enable_fb_check = settings["enable_fb_check"]
+        fb_tolerance = settings["fb_tolerance"]
+        pixel_size_mm = settings["pixel_size_mm"]
+        overlay_every = settings["overlay_every"]
 
-        overlay_every = int(self.overlay_every.get())
-
-        max_frame_jump = None
-        if self.max_frame_strain_jump.get().strip():
-            max_frame_jump = float(self.max_frame_strain_jump.get().strip())
-
-        pixel_size_mm = None
-        if self.pixel_size_mm.get().strip():
-            pixel_size_mm = float(self.pixel_size_mm.get().strip())
-
-        export_origin_txt = bool(self.export_origin_txt.get())
-        export_engineering_png = bool(self.export_engineering_png.get())
-        export_qc_summary = bool(self.export_qc_summary.get())
-        export_full_csv = bool(self.export_full_csv.get())
-        export_corr_plot = bool(self.export_corr_plot.get())
-        export_overlays = bool(self.export_overlays.get())
-        export_parameters = bool(self.export_parameters.get())
+        export_origin_txt = settings["export_origin_txt"]
+        export_engineering_png = settings["export_engineering_png"]
+        export_qc_summary = settings["export_qc_summary"]
+        export_full_csv = settings["export_full_csv"]
+        export_corr_plot = settings["export_corr_plot"]
+        export_overlays = settings["export_overlays"]
+        export_parameters = settings["export_parameters"]
+        export_origin_opju = settings["export_origin_opju"]
 
         params = {
             "search_radius_base": search_radius_base,
@@ -2425,7 +2794,7 @@ class MultiROIGUI:
         first_raw = read_gray_image(image_paths_run[0])
         first_img8 = normalize_to_uint8(first_raw)
 
-        states = self.init_group_states(first_img8)
+        states = self.init_group_states(first_img8, roi_groups)
 
         overlay_dirs = {}
         if export_overlays:
@@ -2441,11 +2810,11 @@ class MultiROIGUI:
         total_work = n * len(states)
         done_work = 0
 
-        self.root.after(0, lambda: self.log(
+        self.post_to_ui(lambda: self.log(
             f"开始处理，分析范围：第 {start_idx + 1} 到第 {end_idx + 1} 帧，"
             f"共 {n} 张图，{len(states)} 组 ROI。"
         ))
-        self.root.after(0, lambda: self.status_var.set("正在批量追踪多组 ROI 并计算应变..."))
+        self.post_to_ui(lambda: self.status_var.set("正在批量追踪多组 ROI 并计算应变..."))
 
         for i, path in enumerate(image_paths_run):
             raw = read_gray_image(path)
@@ -2505,19 +2874,19 @@ class MultiROIGUI:
                         f"Frame {i+1}/{n}, Group {group_name}: {accept_mode}, "
                         f"strain={strain_text}, corr=({overlay_info['score1']:.3f}, {overlay_info['score2']:.3f})"
                     )
-                    self.root.after(0, lambda v=progress_val: self.progress.config(value=v))
-                    self.root.after(0, lambda m=msg: self.status_var.set(m))
-                    self.root.after(0, lambda m=msg: self.log(m))
+                    self.post_to_ui(lambda v=progress_val: self.progress.config(value=v))
+                    self.post_to_ui(lambda m=msg: self.status_var.set(m))
+                    self.post_to_ui(lambda m=msg: self.log(m))
 
         df = pd.DataFrame(all_rows)
         summary = build_qc_summary(df)
-        poisson_enabled = poisson_roles_are_configured(self.roi_groups)
+        poisson_enabled = poisson_roles_are_configured(roi_groups)
         written_paths = []
 
-        if export_origin_txt or export_engineering_png:
+        if export_origin_txt or export_engineering_png or export_origin_opju:
             core_dir.mkdir(parents=True, exist_ok=True)
 
-        for group in self.roi_groups:
+        for group in roi_groups:
             gname = group["name"]
             sg = safe_name(gname)
             gdf = df[df["group"] == gname].copy()
@@ -2534,35 +2903,38 @@ class MultiROIGUI:
 
         if export_origin_txt:
             all_txt = core_dir / "strain_all_groups.txt"
-            write_all_groups_origin_txt(df, all_txt, self.roi_groups)
+            write_all_groups_origin_txt(df, all_txt, roi_groups)
             written_paths.append(all_txt)
+
+            mean_txt = core_dir / "strain_mean_groups.txt"
+            write_mean_groups_origin_txt(df, roi_groups, mean_txt)
+            written_paths.append(mean_txt)
 
             if poisson_enabled:
                 poisson_txt = core_dir / "poisson_ratio.txt"
-                write_poisson_ratio_txt(df, self.roi_groups, poisson_txt)
+                write_poisson_ratio_txt(df, roi_groups, poisson_txt)
                 written_paths.append(poisson_txt)
 
         if export_engineering_png:
             combined_fig = core_dir / "engineering_strain_all_groups.png"
-            plt.figure(figsize=(8, 5))
-            for group in self.roi_groups:
-                gname = group["name"]
-                gdf = df[df["group"] == gname]
-                plt.plot(gdf["frame_global_1based"], gdf["engineering_strain"], linewidth=1, label=gname)
-            plt.xlabel("Frame")
-            plt.ylabel("Engineering strain")
-            plt.title("Engineering strain - all ROI groups")
-            plt.grid(True)
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(combined_fig, dpi=300)
-            plt.close()
+            plot_all_groups_engineering_strain(df, roi_groups, combined_fig)
             written_paths.append(combined_fig)
 
             if poisson_enabled:
                 poisson_fig = core_dir / "poisson_ratio.png"
-                plot_poisson_ratio(df, self.roi_groups, poisson_fig)
+                plot_poisson_ratio(df, roi_groups, poisson_fig)
                 written_paths.append(poisson_fig)
+
+        if export_origin_opju:
+            opju_path = core_dir / ORIGIN_OPJU_FILENAME
+            try:
+                write_origin_opju_project(df, roi_groups, opju_path)
+            except Exception as exc:
+                warning = f"Origin OPJU 项目生成失败：{exc}"
+                self.post_to_ui(lambda m=warning: self.log(m))
+                self.post_to_ui(lambda m=warning: messagebox.showwarning("Origin OPJU 生成失败", m))
+            else:
+                written_paths.append(opju_path)
 
         if export_qc_summary:
             qc_path = qc_dir / "qc_summary.txt"
@@ -2578,7 +2950,7 @@ class MultiROIGUI:
 
             group_dir = full_csv_dir / "per_group_results"
             group_dir.mkdir(parents=True, exist_ok=True)
-            for group in self.roi_groups:
+            for group in roi_groups:
                 gname = group["name"]
                 sg = safe_name(gname)
                 gdf = df[df["group"] == gname].copy()
@@ -2589,7 +2961,7 @@ class MultiROIGUI:
         if export_corr_plot:
             corr_dir = optional_dir / "correlation_plots"
             corr_dir.mkdir(parents=True, exist_ok=True)
-            for group in self.roi_groups:
+            for group in roi_groups:
                 gname = group["name"]
                 sg = safe_name(gname)
                 gdf = df[df["group"] == gname].copy()
@@ -2616,12 +2988,12 @@ class MultiROIGUI:
             with open(params_path, "w", encoding="utf-8") as f:
                 f.write("DIC Virtual Extensometer GUI v7 Multi-ROI Range Preview Parameters\n")
                 f.write("----------------------------------------------------\n")
-                f.write(f"image_folder = {self.image_folder.get()}\n")
+                f.write(f"image_folder = {settings['image_folder']}\n")
                 f.write(f"number_of_images_in_analysis_range = {n}\n")
                 f.write(f"start_frame_1based = {start_idx + 1}\n")
                 f.write(f"end_frame_1based = {end_idx + 1}\n")
-                f.write(f"number_of_groups = {len(self.roi_groups)}\n")
-                f.write(f"tracking_preset = {self.tracking_preset.get()}\n")
+                f.write(f"number_of_groups = {len(roi_groups)}\n")
+                f.write(f"tracking_preset = {settings['tracking_preset']}\n")
                 f.write(f"search_radius_base_px = {search_radius_base}\n")
                 f.write(f"hard_corr = {hard_corr}\n")
                 f.write(f"soft_corr = {soft_corr}\n")
@@ -2634,7 +3006,7 @@ class MultiROIGUI:
                 f.write(f"pixel_size_mm = {pixel_size_mm}\n")
                 f.write(f"overlay_every = {overlay_every}\n")
                 f.write("\nGroups:\n")
-                for g in self.roi_groups:
+                for g in roi_groups:
                     f.write(
                         f"{g['name']}: role={normalize_roi_role(g.get('role', 'none'))}, "
                         f"selected={g['selected_mode']}, actual={g['actual_mode']}, "
@@ -2666,16 +3038,16 @@ class MultiROIGUI:
         path_log = "输出文件：\n" + "\n".join(str(p) for p in written_paths)
         done_msg = (
             f"处理完成。\n"
-            f"核心结果已保存到: {core_dir if (export_origin_txt or export_engineering_png) else output_dir}\n"
+            f"核心结果已保存到: {core_dir if (export_origin_txt or export_engineering_png or export_origin_opju) else output_dir}\n"
             f"QC 状态: {qc_level}\n"
             f"Rejected frames: {n_rejected}\n"
             f"Adaptive accepted frames: {n_adaptive}"
         )
 
-        self.root.after(0, lambda: self.progress.config(value=100))
-        self.root.after(0, lambda: self.status_var.set(f"处理完成，QC 状态：{qc_level}"))
-        self.root.after(0, lambda: self.log(done_msg + "\n" + path_log))
-        self.root.after(0, lambda: messagebox.showinfo("完成", done_msg))
+        self.post_to_ui(lambda: self.progress.config(value=100))
+        self.post_to_ui(lambda: self.status_var.set(f"处理完成，QC 状态：{qc_level}"))
+        self.post_to_ui(lambda: self.log(done_msg + "\n" + path_log))
+        self.post_to_ui(lambda: messagebox.showinfo("完成", done_msg))
 
     def run(self):
         self.root.mainloop()

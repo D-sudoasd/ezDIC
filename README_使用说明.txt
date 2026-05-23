@@ -34,18 +34,23 @@ Basic Workflow
 4. Set the start and end frames.
 5. Select strain direction and tracking mode.
 6. Draw ROI 1 and ROI 2, then add the ROI group.
-7. Optional: set one ROI group role to axial and one to transverse for Poisson-ratio export.
+7. Optional: set axial/transverse roles for Poisson-ratio export. Multiple groups with the same role and direction are averaged frame by frame.
 8. Click Start Analysis and Export.
 
 Default Output
 --------------
 By default, ezDIC exports:
 - Origin-compatible TXT files with Frame, EngineeringStrain, and TrueStrain.
+- Mean-strain TXT files for repeated extensometers with the same role and direction.
 - Poisson-ratio TXT/PNG files when axial/transverse ROI roles are set.
 - Engineering strain PNG plots.
 - QC summary TXT.
 
-Optional debug outputs such as full CSV files, correlation plots, overlays, and parameter summaries are disabled by default and can be enabled in the export options.
+Optional outputs such as an Origin OPJU project, full CSV files, correlation plots, overlays, and parameter summaries are disabled by default and can be enabled in the export options.
+
+Origin OPJU Export
+------------------
+The Origin OPJU option writes the core result tables directly into ezDIC_results.opju. It requires Windows, OriginPro 2021+, a valid local OriginPro license, and the originpro Python package. If OriginPro or originpro is unavailable, ezDIC keeps the TXT/PNG/CSV results and reports only the OPJU export failure.
 
 Attribution And Usage Notice
 ----------------------------

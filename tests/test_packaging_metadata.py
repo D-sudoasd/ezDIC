@@ -1,5 +1,8 @@
 from pathlib import Path
+import time
 
+import cv2
+import numpy as np
 import pytest
 
 import dic_virtual_extensometer_gui_v7_multi_roi_range as ezdic
@@ -22,6 +25,83 @@ def gui_app():
         yield root, app
     finally:
         root.destroy()
+
+
+def write_test_image(path, value=120):
+    arr = np.full((100, 140), value, dtype=np.uint8)
+    ok, data = cv2.imencode(".png", arr)
+    assert ok
+    data.tofile(str(path))
+
+
+def reset_gui_app(app):
+    app.image_folder.set("")
+    app.output_folder.set("")
+    app.search_radius.set(180)
+    app.hard_corr.set(0.55)
+    app.soft_corr.set(0.35)
+    app.strain_mode.set("auto")
+    app.sync_strain_mode_display()
+    app.roi_role.set("none")
+    app.sync_roi_role_display()
+    app.tracking_preset.set("标准")
+    app.preset_status_var.set("当前追踪模式：标准")
+    app.enable_adaptive.set(True)
+    app.use_prev_frame_template.set(True)
+    app.template_alpha.set(0.70)
+    app.max_frame_strain_jump.set("0.01")
+    app.enable_fb_check.set(True)
+    app.fb_tolerance_px.set(12.0)
+    app.overlay_every.set(5)
+    app.pixel_size_mm.set("")
+    app.auto_align_roi2.set(True)
+    app.min_texture_std.set(8.0)
+    app.min_texture_contrast.set(25.0)
+    app.max_saturated_frac.set(0.20)
+    app.export_origin_txt.set(True)
+    app.export_engineering_png.set(True)
+    app.export_qc_summary.set(True)
+    app.export_full_csv.set(False)
+    app.export_corr_plot.set(False)
+    app.export_overlays.set(False)
+    app.export_parameters.set(False)
+    if hasattr(app, "export_origin_opju"):
+        app.export_origin_opju.set(False)
+    app.image_paths = []
+    app.loaded_image_folder = None
+    app.first_raw = None
+    app.first_img8 = None
+    app.display_img = None
+    app.photo = None
+    app.preview_frame_1based.set(1)
+    app.start_frame_1based.set(1)
+    app.end_frame_1based.set(1)
+    app.current_preview_index = 0
+    app.roi1 = None
+    app.roi2 = None
+    app.roi_groups.clear()
+    app.next_group_idx = 1
+    app.group_name_var.set("")
+    app.refresh_group_tree()
+    app.canvas.delete("all")
+
+
+def load_two_frame_sequence(app, folder, output_folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    write_test_image(folder / "frame_001.png", value=100)
+    write_test_image(folder / "frame_002.png", value=130)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    app.image_folder.set(str(folder))
+    app.output_folder.set(str(output_folder))
+    app.load_first_image()
+
+
+def add_basic_roi_group(app):
+    app.roi1 = (10, 10, 30, 30)
+    app.roi2 = (80, 10, 30, 30)
+    app.strain_mode.set("x")
+    app.sync_strain_mode_display()
+    app.add_current_group()
 
 
 def test_app_metadata_and_usage_notice_are_explicit():
@@ -66,6 +146,15 @@ def test_gui_initial_layout_fits_default_window_height(gui_app):
     assert int(app.log_text.cget("height")) <= 10
 
 
+def test_gui_minimum_size_does_not_clip_requested_layout(gui_app):
+    root, _app = gui_app
+    root.update_idletasks()
+
+    min_w, min_h = root.minsize()
+    assert min_w >= root.winfo_reqwidth()
+    assert min_h >= root.winfo_reqheight()
+
+
 def test_gui_beginner_workflow_and_key_button_tooltips_are_available(gui_app):
     _root, app = gui_app
 
@@ -82,6 +171,209 @@ def test_gui_beginner_workflow_and_key_button_tooltips_are_available(gui_app):
     for name, widget, expected_text in tooltip_targets:
         assert widget is not None, f"{name} should be available for GUI tests"
         assert expected_text in getattr(widget, "_tooltip_text", "")
+
+
+def test_gui_includes_origin_opju_export_option_disabled_by_default(gui_app):
+    _root, app = gui_app
+
+    assert app.export_origin_opju.get() is False
+    export_texts = [button.cget("text") for button in app.export_checkbuttons]
+    assert "Origin OPJU 项目（直接导入 OriginPro）" in export_texts
+
+
+def test_loading_new_image_folder_clears_previous_roi_state(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+
+    load_two_frame_sequence(app, tmp_path / "images_a", tmp_path / "out_a")
+    add_basic_roi_group(app)
+    assert len(app.roi_groups) == 1
+
+    load_two_frame_sequence(app, tmp_path / "images_b", tmp_path / "out_b")
+
+    assert app.roi_groups == []
+    assert app.roi1 is None
+    assert app.roi2 is None
+    assert app.next_group_idx == 1
+
+
+def test_failed_image_load_preserves_previous_valid_sequence(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    errors = []
+    monkeypatch.setattr(ezdic.messagebox, "showerror", lambda title, message: errors.append((title, message)))
+
+    load_two_frame_sequence(app, tmp_path / "images_good", tmp_path / "out_good")
+    old_paths = list(app.image_paths)
+    old_preview = app.current_preview_index
+    corrupt_dir = tmp_path / "images_bad"
+    corrupt_dir.mkdir()
+    (corrupt_dir / "bad.png").write_bytes(b"not an image")
+
+    app.image_folder.set(str(corrupt_dir))
+    app.load_first_image()
+
+    assert errors
+    assert app.image_paths == old_paths
+    assert app.current_preview_index == old_preview
+    assert app.first_img8 is not None
+
+
+def test_validate_rejects_output_path_that_is_existing_file(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    load_two_frame_sequence(app, tmp_path / "images", tmp_path / "out")
+    add_basic_roi_group(app)
+    output_file = tmp_path / "not_a_directory.txt"
+    output_file.write_text("occupied", encoding="utf-8")
+    app.output_folder.set(str(output_file))
+
+    with pytest.raises(RuntimeError, match="不是文件夹"):
+        app.validate_before_processing()
+
+
+def test_validate_requires_at_least_one_export_option(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    load_two_frame_sequence(app, tmp_path / "images", tmp_path / "out")
+    add_basic_roi_group(app)
+    app.export_origin_txt.set(False)
+    app.export_engineering_png.set(False)
+    app.export_qc_summary.set(False)
+    app.export_full_csv.set(False)
+    app.export_corr_plot.set(False)
+    app.export_overlays.set(False)
+    app.export_parameters.set(False)
+    app.export_origin_opju.set(False)
+
+    with pytest.raises(RuntimeError, match="至少选择一种导出内容"):
+        app.validate_before_processing()
+    app.export_origin_opju.set(True)
+    app.validate_before_processing()
+
+
+def test_validate_reports_invalid_numeric_inputs_in_chinese(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    load_two_frame_sequence(app, tmp_path / "images", tmp_path / "out")
+    add_basic_roi_group(app)
+
+    app.start_frame_1based.set("abc")
+    with pytest.raises(RuntimeError, match="起始帧.*整数"):
+        app.validate_before_processing()
+
+    app.start_frame_1based.set(1)
+    app.search_radius.set("abc")
+    with pytest.raises(RuntimeError, match="搜索半径.*整数"):
+        app.validate_before_processing()
+
+
+def test_processing_settings_are_snapshotted_before_worker_thread(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    load_two_frame_sequence(app, tmp_path / "images", tmp_path / "out")
+    add_basic_roi_group(app)
+
+    settings = app.build_processing_settings()
+    original_output = settings["output_dir"]
+    original_paths = list(settings["image_paths"])
+    original_groups = list(settings["roi_groups"])
+    assert settings["export_origin_opju"] is False
+
+    app.export_origin_opju.set(True)
+    assert app.build_processing_settings()["export_origin_opju"] is True
+
+    app.output_folder.set(str(tmp_path / "changed_out"))
+    app.image_paths.clear()
+    app.roi_groups.clear()
+
+    assert original_output == tmp_path / "out"
+    assert settings["output_dir"] == original_output
+    assert settings["image_paths"] == original_paths
+    assert settings["roi_groups"] == original_groups
+    assert settings["roi_groups"] is not app.roi_groups
+
+
+def test_background_processing_finishes_even_if_ui_queue_is_not_drained(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ezdic.messagebox, "showerror", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    for idx in range(3):
+        arr = np.full((100, 160), 30, dtype=np.uint8)
+        arr[30:60, 20 + idx:50 + idx] = patch
+        arr[30:60, 90 + idx:120 + idx] = patch
+        ok, data = cv2.imencode(".png", arr)
+        assert ok
+        data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
+
+    app.image_folder.set(str(image_dir))
+    app.output_folder.set(str(tmp_path / "out"))
+    app.load_first_image()
+    app.roi1 = (20, 30, 30, 30)
+    app.roi2 = (90, 30, 30, 30)
+    app.strain_mode.set("x")
+    app.sync_strain_mode_display()
+    app.add_current_group()
+
+    app.start_processing()
+    deadline = time.time() + 5
+    while app.is_processing and time.time() < deadline:
+        time.sleep(0.05)
+
+    assert app.is_processing is False
+    assert (tmp_path / "out" / "core" / "strain_G01.txt").exists()
+
+
+def test_origin_opju_failure_does_not_cancel_existing_exports(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    for idx in range(3):
+        arr = np.full((100, 160), 30, dtype=np.uint8)
+        arr[30:60, 20 + idx:50 + idx] = patch
+        arr[30:60, 90 + idx:120 + idx] = patch
+        ok, data = cv2.imencode(".png", arr)
+        assert ok
+        data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
+
+    app.image_folder.set(str(image_dir))
+    app.output_folder.set(str(tmp_path / "out"))
+    app.load_first_image()
+    app.roi1 = (20, 30, 30, 30)
+    app.roi2 = (90, 30, 30, 30)
+    app.strain_mode.set("x")
+    app.sync_strain_mode_display()
+    app.add_current_group()
+    app.export_origin_opju.set(True)
+
+    failures = []
+
+    def fail_origin_export(*args, **kwargs):
+        failures.append((args, kwargs))
+        raise RuntimeError("OriginPro unavailable")
+
+    monkeypatch.setattr(ezdic, "write_origin_opju_project", fail_origin_export)
+
+    app.process_images(app.build_processing_settings())
+
+    assert failures
+    assert (tmp_path / "out" / "core" / "strain_G01.txt").exists()
+    assert not (tmp_path / "out" / "core" / "ezDIC_results.opju").exists()
 
 
 def test_release_support_files_exist_and_include_usage_limits():
@@ -119,6 +411,8 @@ def test_release_support_files_exist_and_include_usage_limits():
     assert DOI_URL in readme_text
     assert "Virtual extensometer" in github_readme_text
     assert "Origin-compatible TXT" in github_readme_text
+    assert "Origin OPJU" in github_readme_text
+    assert "OriginPro 2021+" in readme_text
     assert "Digital image correlation" in github_readme_text
     assert "Dr. Delun Gong" in github_readme_text
     assert DOI in github_readme_text
@@ -151,7 +445,7 @@ def test_pyinstaller_build_files_define_green_folder_release():
     spec_text = spec.read_text(encoding="utf-8")
     script_text = build_script.read_text(encoding="utf-8")
 
-    for package in ["opencv-python", "numpy", "pandas", "matplotlib", "pillow"]:
+    for package in ["opencv-python", "numpy", "pandas", "matplotlib", "pillow", "originpro"]:
         assert package in req_text
 
     assert "pyinstaller" in build_req_text.lower()

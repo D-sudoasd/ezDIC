@@ -1,4 +1,5 @@
 import math
+import builtins
 
 import numpy as np
 import pandas as pd
@@ -64,6 +65,128 @@ def sample_poisson_groups():
     ]
 
 
+def sample_mean_df():
+    base = {
+        "frame_global_1based": [1, 2, 3],
+        "filename": ["f1.tif", "f2.tif", "f3.tif"],
+        "accept_mode": ["initial", "hard", "hard"],
+        "corr_score_roi1": [1.0, 0.95, 0.95],
+        "corr_score_roi2": [1.0, 0.94, 0.94],
+        "reason": ["initial frame", "ok", "ok"],
+    }
+    gx1 = pd.DataFrame(
+        {
+            **base,
+            "engineering_strain": [0.0, 0.01, 0.02],
+            "true_strain": [99.0, 99.0, 99.0],
+            "accepted": [True, True, True],
+            "group": ["G_x1"] * 3,
+        }
+    )
+    gx2 = pd.DataFrame(
+        {
+            **base,
+            "engineering_strain": [0.0, 0.03, 0.04],
+            "true_strain": [99.0, 99.0, 99.0],
+            "accepted": [True, True, False],
+            "group": ["G_x2"] * 3,
+        }
+    )
+    gy1 = pd.DataFrame(
+        {
+            **base,
+            "engineering_strain": [0.0, -0.02, -0.03],
+            "true_strain": [99.0, 99.0, 99.0],
+            "accepted": [True, True, True],
+            "group": ["G_y1"] * 3,
+        }
+    )
+    return pd.concat([gx1, gx2, gy1], ignore_index=True)
+
+
+def sample_mean_groups():
+    return [
+        {"name": "G_x1", "role": "none", "actual_mode": "x"},
+        {"name": "G_x2", "role": "none", "actual_mode": "x"},
+        {"name": "G_y1", "role": "none", "actual_mode": "y"},
+    ]
+
+
+def sample_multi_poisson_df():
+    base = {
+        "frame_global_1based": [1, 2, 3],
+        "filename": ["f1.tif", "f2.tif", "f3.tif"],
+        "accept_mode": ["initial", "hard", "hard"],
+        "corr_score_roi1": [1.0, 0.95, 0.95],
+        "corr_score_roi2": [1.0, 0.94, 0.94],
+        "reason": ["initial frame", "ok", "ok"],
+    }
+    rows = []
+    for name, strains, accepted in [
+        ("A1", [0.0, 0.02, 0.04], [True, True, True]),
+        ("A2", [0.0, 0.04, 0.08], [True, True, True]),
+        ("T1", [0.0, -0.006, -0.012], [True, True, True]),
+        ("T2", [0.0, -0.012, -0.024], [True, True, False]),
+    ]:
+        rows.append(
+            pd.DataFrame(
+                {
+                    **base,
+                    "engineering_strain": strains,
+                    "true_strain": [99.0, 99.0, 99.0],
+                    "accepted": accepted,
+                    "group": [name] * 3,
+                }
+            )
+        )
+    return pd.concat(rows, ignore_index=True)
+
+
+def sample_multi_poisson_groups():
+    return [
+        {"name": "A1", "role": "axial", "actual_mode": "y"},
+        {"name": "A2", "role": "axial", "actual_mode": "y"},
+        {"name": "T1", "role": "transverse", "actual_mode": "x"},
+        {"name": "T2", "role": "transverse", "actual_mode": "x"},
+    ]
+
+
+class FakeOriginWorksheet:
+    def __init__(self, name):
+        self.name = name
+        self.dataframes = []
+
+    def from_df(self, df):
+        self.dataframes.append(df.copy())
+
+
+class FakeOriginModule:
+    def __init__(self, save_result=True, new_error=None):
+        self.save_result = save_result
+        self.new_error = new_error
+        self.new_calls = []
+        self.new_sheet_calls = []
+        self.saved_paths = []
+        self.worksheets = []
+
+    def new(self, asksave=False):
+        self.new_calls.append(asksave)
+        if self.new_error is not None:
+            raise self.new_error
+
+    def new_sheet(self, type_="w", lname="", template="", hidden=False):
+        self.new_sheet_calls.append(
+            {"type": type_, "lname": lname, "template": template, "hidden": hidden}
+        )
+        worksheet = FakeOriginWorksheet(lname)
+        self.worksheets.append(worksheet)
+        return worksheet
+
+    def save(self, path=""):
+        self.saved_paths.append(path)
+        return self.save_result
+
+
 def test_build_core_strain_table_uses_origin_columns_and_recomputes_true_strain():
     table = ezdic.build_core_strain_table(sample_group_df())
 
@@ -110,6 +233,158 @@ def test_plot_engineering_strain_writes_png_with_failure_markers(tmp_path):
     assert path.stat().st_size > 0
 
 
+def test_build_mean_strain_table_groups_by_role_and_mode_and_counts_valid_groups():
+    table = ezdic.build_mean_strain_table(sample_mean_df(), sample_mean_groups())
+
+    assert list(table.columns) == [
+        "Frame",
+        "MeanEngineeringStrain_none_x",
+        "MeanTrueStrain_none_x",
+        "StdEngineeringStrain_none_x",
+        "SemEngineeringStrain_none_x",
+        "ValidGroupCount_none_x",
+        "MeanEngineeringStrain_none_y",
+        "MeanTrueStrain_none_y",
+        "StdEngineeringStrain_none_y",
+        "SemEngineeringStrain_none_y",
+        "ValidGroupCount_none_y",
+    ]
+    assert table["Frame"].tolist() == [1, 2, 3]
+    assert math.isclose(table.loc[1, "MeanEngineeringStrain_none_x"], 0.02, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(table.loc[1, "MeanTrueStrain_none_x"], math.log1p(0.02), rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(
+        table.loc[1, "StdEngineeringStrain_none_x"],
+        math.sqrt(0.0002),
+        rel_tol=0,
+        abs_tol=1e-12,
+    )
+    assert math.isclose(table.loc[1, "SemEngineeringStrain_none_x"], 0.01, rel_tol=0, abs_tol=1e-12)
+    assert table.loc[1, "ValidGroupCount_none_x"] == 2
+    assert math.isclose(table.loc[2, "MeanEngineeringStrain_none_x"], 0.02, rel_tol=0, abs_tol=1e-12)
+    assert np.isnan(table.loc[2, "StdEngineeringStrain_none_x"])
+    assert np.isnan(table.loc[2, "SemEngineeringStrain_none_x"])
+    assert table.loc[2, "ValidGroupCount_none_x"] == 1
+    assert math.isclose(table.loc[1, "MeanEngineeringStrain_none_y"], -0.02, rel_tol=0, abs_tol=1e-12)
+
+
+def test_build_all_groups_strain_table_appends_mean_columns_when_groups_are_provided():
+    table = ezdic.build_all_groups_strain_table(sample_mean_df(), sample_mean_groups())
+
+    assert "EngineeringStrain_G_x1" in table.columns
+    assert "EngineeringStrain_G_x2" in table.columns
+    assert "MeanEngineeringStrain_none_x" in table.columns
+    assert "ValidGroupCount_none_y" in table.columns
+    assert math.isclose(table.loc[1, "MeanEngineeringStrain_none_x"], 0.02, rel_tol=0, abs_tol=1e-12)
+
+
+def test_write_mean_groups_origin_txt_is_origin_friendly(tmp_path):
+    path = tmp_path / "strain_mean_groups.txt"
+
+    ezdic.write_mean_groups_origin_txt(sample_mean_df(), sample_mean_groups(), path)
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("Frame\tMeanEngineeringStrain_none_x\tMeanTrueStrain_none_x")
+    assert lines[2].startswith(f"2\t0.02000000\t{math.log1p(0.02):.8f}\t")
+
+
+def test_plot_all_groups_engineering_strain_writes_png_with_mean_curves(tmp_path):
+    path = tmp_path / "engineering_strain_all_groups.png"
+
+    ezdic.plot_all_groups_engineering_strain(sample_mean_df(), sample_mean_groups(), path)
+
+    assert path.exists()
+    assert path.stat().st_size > 0
+
+
+def test_build_origin_project_tables_includes_all_core_tables_and_columns():
+    tables = ezdic.build_origin_project_tables(sample_multi_poisson_df(), sample_multi_poisson_groups())
+    table_map = dict(tables)
+
+    assert list(table_map) == [
+        "strain_A1",
+        "strain_A2",
+        "strain_T1",
+        "strain_T2",
+        "strain_all_groups",
+        "strain_mean_groups",
+        "poisson_ratio",
+    ]
+    assert list(table_map["strain_A1"].columns) == ["Frame", "EngineeringStrain", "TrueStrain"]
+    assert "MeanEngineeringStrain_axial_y" in table_map["strain_all_groups"].columns
+    assert "MeanEngineeringStrain_transverse_x" in table_map["strain_mean_groups"].columns
+    assert list(table_map["poisson_ratio"].columns) == [
+        "Frame",
+        "AxialEngineeringStrain",
+        "TransverseEngineeringStrain",
+        "PoissonRatio",
+    ]
+
+
+def test_write_origin_opju_project_uses_originpro_api_and_saves_project(tmp_path):
+    fake_origin = FakeOriginModule()
+    path = tmp_path / "core" / "ezDIC_results.opju"
+
+    result = ezdic.write_origin_opju_project(
+        sample_multi_poisson_df(),
+        sample_multi_poisson_groups(),
+        path,
+        origin_module=fake_origin,
+    )
+
+    assert result == path
+    assert fake_origin.new_calls == [True]
+    assert fake_origin.saved_paths == [str(path)]
+    assert [call["lname"] for call in fake_origin.new_sheet_calls] == [
+        "strain_A1",
+        "strain_A2",
+        "strain_T1",
+        "strain_T2",
+        "strain_all_groups",
+        "strain_mean_groups",
+        "poisson_ratio",
+    ]
+    assert fake_origin.worksheets[0].dataframes[0]["Frame"].tolist() == [1, 2, 3]
+    assert path.parent.exists()
+
+
+def test_write_origin_opju_project_reports_missing_originpro(tmp_path, monkeypatch):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "originpro":
+            raise ImportError("No module named originpro")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(RuntimeError, match="originpro"):
+        ezdic.write_origin_opju_project(sample_group_df(), [{"name": "G01"}], tmp_path / "out.opju")
+
+
+def test_write_origin_opju_project_raises_when_origin_save_fails(tmp_path):
+    fake_origin = FakeOriginModule(save_result=False)
+
+    with pytest.raises(RuntimeError, match="保存 Origin OPJU 项目失败"):
+        ezdic.write_origin_opju_project(
+            sample_group_df(),
+            [{"name": "G01", "role": "none", "actual_mode": "x"}],
+            tmp_path / "out.opju",
+            origin_module=fake_origin,
+        )
+
+
+def test_write_origin_opju_project_wraps_origin_com_errors(tmp_path):
+    fake_origin = FakeOriginModule(new_error=RuntimeError("COM startup failed"))
+
+    with pytest.raises(RuntimeError, match="生成 Origin OPJU 项目失败"):
+        ezdic.write_origin_opju_project(
+            sample_group_df(),
+            [{"name": "G01", "role": "none", "actual_mode": "x"}],
+            tmp_path / "out.opju",
+            origin_module=fake_origin,
+        )
+
+
 def test_build_poisson_ratio_table_uses_engineering_strain_and_nan_guards():
     table = ezdic.build_poisson_ratio_table(sample_poisson_df(), sample_poisson_groups())
 
@@ -124,6 +399,32 @@ def test_build_poisson_ratio_table_uses_engineering_strain_and_nan_guards():
     assert math.isclose(table.loc[1, "PoissonRatio"], 0.3, rel_tol=0, abs_tol=1e-12)
     assert np.isnan(table.loc[2, "PoissonRatio"])
     assert np.isnan(table.loc[3, "PoissonRatio"])
+
+
+def test_build_poisson_ratio_table_uses_mean_strains_for_multiple_role_groups():
+    table = ezdic.build_poisson_ratio_table(sample_multi_poisson_df(), sample_multi_poisson_groups())
+
+    assert list(table.columns) == [
+        "Frame",
+        "AxialEngineeringStrain",
+        "TransverseEngineeringStrain",
+        "PoissonRatio",
+    ]
+    assert np.isnan(table.loc[0, "PoissonRatio"])
+    assert math.isclose(table.loc[1, "AxialEngineeringStrain"], 0.03, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(table.loc[1, "TransverseEngineeringStrain"], -0.009, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(table.loc[1, "PoissonRatio"], 0.3, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(table.loc[2, "AxialEngineeringStrain"], 0.06, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(table.loc[2, "TransverseEngineeringStrain"], -0.012, rel_tol=0, abs_tol=1e-12)
+    assert math.isclose(table.loc[2, "PoissonRatio"], 0.2, rel_tol=0, abs_tol=1e-12)
+
+
+def test_build_poisson_ratio_table_rejects_mixed_modes_within_role():
+    groups = sample_multi_poisson_groups()
+    groups[1] = {"name": "A2", "role": "axial", "actual_mode": "x"}
+
+    with pytest.raises(RuntimeError, match="actual_mode"):
+        ezdic.build_poisson_ratio_table(sample_multi_poisson_df(), groups)
 
 
 def test_build_all_groups_strain_table_appends_poisson_columns_when_roles_are_set():

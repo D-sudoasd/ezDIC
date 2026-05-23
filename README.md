@@ -17,7 +17,9 @@ Many materials experiments only require a reliable 1D strain history rather than
 - **Simple workflow**: load images, draw two ROIs, run tracking, export strain.
 - **Virtual extensometer model**: strain is computed from the changing distance between two tracked ROI centers.
 - **Origin-compatible TXT output**: the default export contains `Frame`, `EngineeringStrain`, and `TrueStrain`.
-- **Poisson-ratio export**: mark one ROI group as axial and one as transverse to export transverse strain and `PoissonRatio`.
+- **Origin OPJU export**: optionally writes core result tables directly into an OriginPro project file.
+- **Mean-strain export**: multiple extensometers with the same role and direction are averaged frame by frame with standard deviation, SEM, and valid-count columns.
+- **Poisson-ratio export**: mark axial and transverse ROI groups to export transverse strain and `PoissonRatio`; multiple groups are averaged before the ratio is computed.
 - **Quality control built in**: rejected frames, adaptive accepts, correlation scores, and QC summaries are reported.
 - **No Python required for users**: Windows releases are distributed as a green, portable folder with `ezDIC.exe`.
 - **Research-oriented defaults**: failed tracking frames remain `NaN` instead of being silently interpolated.
@@ -37,6 +39,8 @@ By default, ezDIC writes a compact `core/` result folder:
 core/
   strain_G01.txt
   strain_all_groups.txt
+  strain_mean_groups.txt
+  ezDIC_results.opju       # optional, requires OriginPro 2021+ and originpro
   poisson_ratio.txt        # when axial/transverse ROI roles are set
   engineering_strain_G01.png
   engineering_strain_all_groups.png
@@ -54,9 +58,15 @@ Frame	EngineeringStrain	TrueStrain
 3	0.00000580	0.00000580
 ```
 
-Optional exports include full CSV tables, correlation plots, tracking overlays, and parameter summaries.
+Optional exports include an Origin OPJU project, full CSV tables, correlation plots, tracking overlays, and parameter summaries. The OPJU export requires Windows, OriginPro 2021+, a valid local OriginPro license, and the `originpro` Python package. It writes worksheet data only; publication figures still come from the existing PNG exports or from manual plotting in OriginPro.
 
-For Poisson-ratio analysis, add one ROI group with role `axial` and one ROI group with role `transverse`. `strain_all_groups.txt` keeps the original per-group columns and appends:
+For repeated virtual extensometers, `strain_mean_groups.txt` averages groups with the same `role` and `actual_mode` frame by frame. Rejected frames and `NaN` strain values are excluded from the mean. The mean table includes:
+
+```text
+MeanEngineeringStrain_<role>_<mode>	MeanTrueStrain_<role>_<mode>	StdEngineeringStrain_<role>_<mode>	SemEngineeringStrain_<role>_<mode>	ValidGroupCount_<role>_<mode>
+```
+
+For Poisson-ratio analysis, add at least one ROI group with role `axial` and at least one with role `transverse`. `strain_all_groups.txt` keeps the original per-group columns, appends mean-strain columns, and appends:
 
 ```text
 AxialEngineeringStrain	TransverseEngineeringStrain	PoissonRatio
@@ -98,6 +108,7 @@ release/
 The current automated checks cover:
 
 - Origin-compatible TXT export.
+- Origin OPJU table construction and failure handling with a fake OriginPro API.
 - true strain recomputation from engineering strain.
 - QC summary generation.
 - GUI title and developer attribution.
@@ -139,13 +150,13 @@ true strain = ln(L / L0) = ln(1 + engineering strain)
 
 where `L0` is the initial ROI-center separation and `L` is the current separation. If tracking fails, the frame is exported as `NaN` to preserve the experimental record.
 
-Poisson ratio is computed from engineering strain:
+Poisson ratio is computed from engineering strain. If more than one axial or transverse ROI group is defined, ezDIC first computes the frame-by-frame mean strain within each role:
 
 ```text
 PoissonRatio = - TransverseEngineeringStrain / AxialEngineeringStrain
 ```
 
-If either ROI group fails tracking, either strain is `NaN`, or `abs(AxialEngineeringStrain) < 1e-6`, the Poisson-ratio value is exported as `NaN`.
+If either role has no valid strain for a frame, either mean strain is `NaN`, or `abs(AxialEngineeringStrain) < 1e-6`, the Poisson-ratio value is exported as `NaN`.
 
 ## Limitations
 
