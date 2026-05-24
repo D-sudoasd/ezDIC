@@ -1303,9 +1303,9 @@ class MultiROIGUI:
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         width = min(1440, max(1180, screen_w - 160))
-        height = min(940, max(760, screen_h - 140))
+        height = min(900, max(720, screen_h - 140))
         self.root.geometry(f"{width}x{height}")
-        self.root.minsize(1180, 760)
+        self.root.minsize(1120, 700)
 
     def configure_final_window_limits(self):
         self.root.update_idletasks()
@@ -1335,213 +1335,351 @@ class MultiROIGUI:
         except tk.TclError:
             pass
 
+        self.ui_bg = "#eef2f7"
+        self.panel_bg = "#f8fafc"
+        self.card_bg = "#ffffff"
+        self.border_color = "#cbd5e1"
+        self.primary_color = "#0b6fcb"
+        self.primary_active = "#095aa5"
+        self.text_color = "#0f172a"
+        self.muted_color = "#475569"
+
         base_font = ("Microsoft YaHei UI", 9)
         title_font = ("Microsoft YaHei UI", 10, "bold")
-        primary_font = ("Microsoft YaHei UI", 11, "bold")
+        primary_font = ("Microsoft YaHei UI", 10, "bold")
         step_font = ("Microsoft YaHei UI", 9, "bold")
 
+        self.root.configure(background=self.ui_bg)
         self.root.option_add("*Font", base_font)
         self.style.configure(".", font=base_font)
-        self.style.configure("TLabelframe.Label", font=title_font)
-        self.style.configure("Primary.TButton", font=primary_font, padding=(14, 8), foreground="#ffffff", background="#0b6fcb")
+        self.style.configure("App.TFrame", background=self.ui_bg)
+        self.style.configure("Panel.TFrame", background=self.panel_bg)
+        self.style.configure("Card.TFrame", background=self.card_bg)
+        self.style.configure("TLabel", background=self.card_bg, foreground=self.text_color)
+        self.style.configure("Hint.TLabel", background=self.card_bg, foreground=self.muted_color)
+        self.style.configure("StepTitle.TLabel", background=self.card_bg, font=step_font, foreground=self.text_color)
+        self.style.configure("TLabelframe", background=self.card_bg, bordercolor=self.border_color, relief="solid")
+        self.style.configure("TLabelframe.Label", background=self.ui_bg, foreground=self.text_color, font=title_font)
+        self.style.configure("TButton", padding=(10, 5))
+        self.style.configure("Compact.TButton", padding=(8, 4))
+        self.style.configure("Primary.TButton", font=primary_font, padding=(14, 8), foreground="#ffffff", background=self.primary_color)
         self.style.map(
             "Primary.TButton",
             foreground=[("disabled", "#d9d9d9"), ("active", "#ffffff")],
-            background=[("disabled", "#8fa8bf"), ("active", "#095aa5"), ("pressed", "#074b8a")],
+            background=[("disabled", "#8fa8bf"), ("active", self.primary_active), ("pressed", "#074b8a")],
         )
-        self.style.configure("Hint.TLabel", foreground="#4b5563")
-        self.style.configure("StepTitle.TLabel", font=step_font, foreground="#111827")
+        self.style.configure("TEntry", padding=(4, 3))
+        self.style.configure("TCombobox", padding=(4, 3))
+        self.style.configure("Treeview", rowheight=24, background="#ffffff", fieldbackground="#ffffff")
+        self.style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"))
 
     def build_ui(self):
-        main = ttk.Frame(self.root, padding=8)
-        main.pack(fill=tk.BOTH, expand=True)
-        left = ttk.Frame(main)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.root.configure(background=self.ui_bg)
+        self.main_frame = ttk.Frame(self.root, style="App.TFrame", padding=(10, 8, 10, 8))
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        self.main_frame.columnconfigure(0, weight=1)
+        self.main_frame.rowconfigure(1, weight=1)
 
-        file_frame = ttk.LabelFrame(left, text="1. 图像与输出", padding=8)
-        file_frame.pack(fill=tk.X, side=tk.TOP)
+        self._build_project_section(self.main_frame)
+        self._build_workspace(self.main_frame)
 
-        ttk.Label(file_frame, text="图像文件夹：").grid(row=0, column=0, sticky="w")
-        ttk.Entry(file_frame, textvariable=self.image_folder, width=84).grid(row=0, column=1, sticky="we", padx=4)
-        self.select_image_button = ttk.Button(file_frame, text="选择文件夹", command=self.select_image_folder)
-        self.select_image_button.grid(row=0, column=2, padx=4)
+    def _build_project_section(self, parent):
+        self.project_frame = ttk.LabelFrame(parent, text="1. 图像与输出", padding=(8, 4))
+        self.project_frame.grid(row=0, column=0, sticky="ew")
+        self.project_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(self.project_frame, text="图像文件夹：").grid(row=0, column=0, sticky="w", pady=1)
+        ttk.Entry(self.project_frame, textvariable=self.image_folder, width=42).grid(
+            row=0, column=1, sticky="ew", padx=(6, 8), pady=1
+        )
+        self.select_image_button = ttk.Button(
+            self.project_frame,
+            text="选择文件夹",
+            command=self.select_image_folder,
+            style="Compact.TButton",
+        )
+        self.select_image_button.grid(row=0, column=2, sticky="ew", pady=1)
         self.add_tooltip(self.select_image_button, "选择包含连续图像的文件夹；支持 tif/tiff/png/jpg/bmp，程序会按文件名自然排序。")
 
-        ttk.Label(file_frame, text="输出文件夹：").grid(row=1, column=0, sticky="w")
-        ttk.Entry(file_frame, textvariable=self.output_folder, width=84).grid(row=1, column=1, sticky="we", padx=4)
-        self.select_output_button = ttk.Button(file_frame, text="选择输出", command=self.select_output_folder)
-        self.select_output_button.grid(row=1, column=2, padx=4)
+        ttk.Label(self.project_frame, text="输出文件夹：").grid(row=1, column=0, sticky="w", pady=1)
+        ttk.Entry(self.project_frame, textvariable=self.output_folder, width=42).grid(
+            row=1, column=1, sticky="ew", padx=(6, 8), pady=1
+        )
+        self.select_output_button = ttk.Button(
+            self.project_frame,
+            text="选择输出",
+            command=self.select_output_folder,
+            style="Compact.TButton",
+        )
+        self.select_output_button.grid(row=1, column=2, sticky="ew", pady=1)
         self.add_tooltip(self.select_output_button, "选择结果保存位置；默认会在图像文件夹下创建 virtual_extensometer_output 目录。")
 
-        seq_buttons = ttk.Frame(file_frame)
-        seq_buttons.grid(row=2, column=0, columnspan=3, sticky="we", pady=(8, 0))
-        self.load_images_button = ttk.Button(seq_buttons, text="加载图像序列", command=self.load_first_image)
-        self.load_images_button.grid(row=0, column=0, padx=3, pady=2, sticky="w")
+        seq_buttons = ttk.Frame(self.project_frame, style="Card.TFrame")
+        seq_buttons.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        for col in (8, 9):
+            seq_buttons.columnconfigure(col, weight=1)
+
+        self.load_images_button = ttk.Button(
+            seq_buttons,
+            text="加载图像序列",
+            command=self.load_first_image,
+            style="Compact.TButton",
+        )
+        self.load_images_button.grid(row=0, column=0, padx=(0, 8), pady=1, sticky="w")
         self.add_tooltip(self.load_images_button, "读取图像文件夹并显示预览帧；首次加载会把分析范围默认设为第 1 帧到最后一帧。")
-        ttk.Label(seq_buttons, text="预览帧：").grid(row=0, column=1, padx=(12, 2), sticky="w")
-        ttk.Entry(seq_buttons, textvariable=self.preview_frame_1based, width=7).grid(row=0, column=2, padx=2, sticky="w")
-        self.show_preview_button = ttk.Button(seq_buttons, text="显示", command=self.go_to_preview_frame)
-        self.show_preview_button.grid(row=0, column=3, padx=2, sticky="w")
+
+        ttk.Label(seq_buttons, text="预览帧：").grid(row=0, column=1, padx=(0, 3), sticky="w")
+        ttk.Entry(seq_buttons, textvariable=self.preview_frame_1based, width=6).grid(row=0, column=2, padx=(0, 4), sticky="w")
+        self.show_preview_button = ttk.Button(seq_buttons, text="显示", command=self.go_to_preview_frame, style="Compact.TButton")
+        self.show_preview_button.grid(row=0, column=3, padx=(0, 4), sticky="w")
         self.add_tooltip(self.show_preview_button, "跳转到输入的帧号，用来检查参考帧或结束帧是否合适。")
-        self.prev_frame_button = ttk.Button(seq_buttons, text="上一帧", command=lambda: self.step_preview_frame(-1))
-        self.prev_frame_button.grid(row=0, column=4, padx=2, sticky="w")
+
+        self.prev_frame_button = ttk.Button(seq_buttons, text="上一帧", command=lambda: self.step_preview_frame(-1), style="Compact.TButton")
+        self.prev_frame_button.grid(row=0, column=4, padx=(0, 4), sticky="w")
         self.add_tooltip(self.prev_frame_button, "向前预览一帧，不改变已设置的分析范围。")
-        self.next_frame_button = ttk.Button(seq_buttons, text="下一帧", command=lambda: self.step_preview_frame(1))
-        self.next_frame_button.grid(row=0, column=5, padx=2, sticky="w")
+
+        self.next_frame_button = ttk.Button(seq_buttons, text="下一帧", command=lambda: self.step_preview_frame(1), style="Compact.TButton")
+        self.next_frame_button.grid(row=0, column=5, padx=(0, 14), sticky="w")
         self.add_tooltip(self.next_frame_button, "向后预览一帧，不改变已设置的分析范围。")
 
-        ttk.Label(seq_buttons, text="分析范围：").grid(row=1, column=0, padx=3, pady=2, sticky="w")
-        ttk.Entry(seq_buttons, textvariable=self.start_frame_1based, width=7).grid(row=1, column=1, padx=2, pady=2, sticky="w")
-        ttk.Label(seq_buttons, text="到").grid(row=1, column=2, sticky="w")
-        ttk.Entry(seq_buttons, textvariable=self.end_frame_1based, width=7).grid(row=1, column=3, padx=2, pady=2, sticky="w")
-        self.set_start_button = ttk.Button(seq_buttons, text="当前帧设为起始/参考", command=self.set_start_to_current)
-        self.set_start_button.grid(row=1, column=4, padx=3, pady=2, sticky="w")
+        ttk.Label(seq_buttons, text="分析范围：").grid(row=0, column=6, padx=(0, 3), sticky="w")
+        ttk.Entry(seq_buttons, textvariable=self.start_frame_1based, width=6).grid(row=0, column=7, padx=(0, 3), sticky="w")
+        ttk.Label(seq_buttons, text="到").grid(row=0, column=8, padx=(0, 3), sticky="w")
+        ttk.Entry(seq_buttons, textvariable=self.end_frame_1based, width=6).grid(row=0, column=9, padx=(0, 8), sticky="w")
+
+        self.set_start_button = ttk.Button(
+            seq_buttons,
+            text="当前帧设为起始/参考",
+            command=self.set_start_to_current,
+            style="Compact.TButton",
+        )
+        self.set_start_button.grid(row=0, column=10, padx=(0, 4), sticky="w")
         self.add_tooltip(self.set_start_button, "把当前预览帧设为起始帧；ROI 模板必须在这张参考帧上绘制。")
-        self.set_end_button = ttk.Button(seq_buttons, text="当前帧设为结束", command=self.set_end_to_current)
-        self.set_end_button.grid(row=1, column=5, padx=3, pady=2, sticky="w")
+
+        self.set_end_button = ttk.Button(seq_buttons, text="当前帧设为结束", command=self.set_end_to_current, style="Compact.TButton")
+        self.set_end_button.grid(row=0, column=11, sticky="w")
         self.add_tooltip(self.set_end_button, "把当前预览帧设为批量追踪的最后一帧，用于避开无效后段图像。")
-        file_frame.columnconfigure(1, weight=1)
 
-        measure_frame = ttk.LabelFrame(left, text="2. 测量设置", padding=8)
-        measure_frame.pack(fill=tk.X, side=tk.TOP, pady=(8, 0))
+    def _build_workspace(self, parent):
+        workspace = ttk.Frame(parent, style="App.TFrame")
+        workspace.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        workspace.columnconfigure(0, weight=1)
+        workspace.columnconfigure(1, weight=0)
+        workspace.rowconfigure(0, weight=1)
 
-        ttk.Label(measure_frame, text="应变方向").grid(row=0, column=0, sticky="w")
+        left = ttk.Frame(workspace, style="App.TFrame")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(1, weight=1)
+
+        self._build_scrollable_controls(left)
+        self._build_image_section(left)
+        self._build_analysis_section(workspace)
+
+    def _build_scrollable_controls(self, parent):
+        self.controls_frame = ttk.Frame(parent, style="App.TFrame")
+        self.controls_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.controls_frame.columnconfigure(0, weight=1)
+        self.controls_frame.rowconfigure(0, weight=1)
+
+        self.controls_canvas = tk.Canvas(
+            self.controls_frame,
+            height=260,
+            bg=self.ui_bg,
+            highlightthickness=1,
+            highlightbackground=self.border_color,
+            borderwidth=0,
+        )
+        controls_scrollbar = ttk.Scrollbar(self.controls_frame, orient=tk.VERTICAL, command=self.controls_canvas.yview)
+        self.controls_canvas.configure(yscrollcommand=controls_scrollbar.set)
+        self.controls_canvas.grid(row=0, column=0, sticky="ew")
+        controls_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        self.controls_panel = ttk.Frame(self.controls_canvas, style="Panel.TFrame", padding=(0, 0, 4, 0))
+        self.controls_window = self.controls_canvas.create_window((0, 0), window=self.controls_panel, anchor="nw")
+        self.controls_panel.bind(
+            "<Configure>",
+            lambda _event: self.controls_canvas.configure(scrollregion=self.controls_canvas.bbox("all")),
+        )
+        self.controls_canvas.bind(
+            "<Configure>",
+            lambda event: self.controls_canvas.itemconfigure(self.controls_window, width=event.width),
+        )
+
+        self._build_measure_section(self.controls_panel)
+        self._build_roi_section(self.controls_panel)
+
+    def _build_measure_section(self, parent):
+        measure_frame = ttk.LabelFrame(parent, text="2. 测量设置", padding=(10, 8))
+        measure_frame.grid(row=0, column=0, sticky="ew")
+        measure_frame.columnconfigure(7, weight=1)
+
+        ttk.Label(measure_frame, text="应变方向").grid(row=0, column=0, sticky="w", padx=(0, 4), pady=2)
         mode_box = ttk.Combobox(
             measure_frame,
             textvariable=self.strain_mode_display,
             values=list(STRAIN_MODE_LABEL_TO_VALUE.keys()),
-            width=14,
+            width=12,
             state="readonly",
         )
-        mode_box.grid(row=0, column=1, padx=(3, 16), sticky="w")
+        mode_box.grid(row=0, column=1, sticky="w", padx=(0, 14), pady=2)
         mode_box.bind("<<ComboboxSelected>>", self.sync_strain_mode_from_display)
 
-        ttk.Label(measure_frame, text="追踪模式").grid(row=0, column=2, sticky="w")
+        ttk.Label(measure_frame, text="追踪模式").grid(row=0, column=2, sticky="w", padx=(0, 4), pady=2)
         preset_box = ttk.Combobox(
             measure_frame,
             textvariable=self.tracking_preset,
             values=list(TRACKING_PRESETS.keys()) + ["自定义"],
-            width=14,
+            width=12,
             state="readonly",
         )
-        preset_box.grid(row=0, column=3, padx=(3, 16), sticky="w")
+        preset_box.grid(row=0, column=3, sticky="w", padx=(0, 14), pady=2)
         preset_box.bind("<<ComboboxSelected>>", self.apply_tracking_preset)
-        ttk.Label(measure_frame, textvariable=self.preset_status_var).grid(row=0, column=4, padx=(0, 16), sticky="w")
+        ttk.Label(measure_frame, textvariable=self.preset_status_var, style="Hint.TLabel").grid(
+            row=0, column=4, columnspan=4, sticky="w", pady=2
+        )
 
-        ttk.Label(measure_frame, text="像素尺寸 mm/px，可空").grid(row=0, column=5, sticky="w")
-        ttk.Entry(measure_frame, textvariable=self.pixel_size_mm, width=10).grid(row=0, column=6, padx=(3, 16), sticky="w")
-        ttk.Checkbutton(measure_frame, text="绘制 ROI2 后自动对齐", variable=self.auto_align_roi2).grid(row=0, column=7, sticky="w")
+        ttk.Label(measure_frame, text="像素尺寸 mm/px，可空").grid(row=1, column=0, columnspan=2, sticky="w", padx=(0, 4), pady=2)
+        ttk.Entry(measure_frame, textvariable=self.pixel_size_mm, width=9).grid(row=1, column=2, sticky="w", padx=(0, 14), pady=2)
+        ttk.Checkbutton(measure_frame, text="绘制 ROI2 后自动对齐", variable=self.auto_align_roi2).grid(
+            row=1, column=3, columnspan=2, sticky="w", pady=2
+        )
 
-        self.advanced_toggle_btn = ttk.Button(measure_frame, text="显示高级设置", command=self.toggle_advanced_settings)
-        self.advanced_toggle_btn.grid(row=1, column=0, pady=(8, 0), sticky="w")
+        self.advanced_toggle_btn = ttk.Button(
+            measure_frame,
+            text="显示高级设置",
+            command=self.toggle_advanced_settings,
+            style="Compact.TButton",
+        )
+        self.advanced_toggle_btn.grid(row=1, column=5, columnspan=2, sticky="w", padx=(12, 0), pady=2)
 
-        self.advanced_frame = ttk.LabelFrame(measure_frame, text="高级设置", padding=6)
-        self.advanced_frame.grid(row=2, column=0, columnspan=8, sticky="we", pady=(8, 0))
-
-        ttk.Label(self.advanced_frame, text="搜索半径 px").grid(row=0, column=0, sticky="w")
-        ttk.Entry(self.advanced_frame, textvariable=self.search_radius, width=7).grid(row=0, column=1, padx=(3, 10))
-        ttk.Label(self.advanced_frame, text="严格接受阈值").grid(row=0, column=2, sticky="w")
-        ttk.Entry(self.advanced_frame, textvariable=self.hard_corr, width=7).grid(row=0, column=3, padx=(3, 10))
-        ttk.Label(self.advanced_frame, text="弱接受阈值").grid(row=0, column=4, sticky="w")
-        ttk.Entry(self.advanced_frame, textvariable=self.soft_corr, width=7).grid(row=0, column=5, padx=(3, 10))
-        ttk.Label(self.advanced_frame, text="单帧应变突变上限").grid(row=0, column=6, sticky="w")
-        ttk.Entry(self.advanced_frame, textvariable=self.max_frame_strain_jump, width=8).grid(row=0, column=7, padx=(3, 10))
-
-        ttk.Checkbutton(self.advanced_frame, text="启用自适应弱接受", variable=self.enable_adaptive).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(self.advanced_frame, text="使用前一帧模板跟随", variable=self.use_prev_frame_template).grid(row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(self.advanced_frame, text="模板跟随系数").grid(row=1, column=4, sticky="w", pady=(6, 0))
-        ttk.Entry(self.advanced_frame, textvariable=self.template_alpha, width=7).grid(row=1, column=5, padx=(3, 10), pady=(6, 0))
-        ttk.Checkbutton(self.advanced_frame, text="前后向一致性检查", variable=self.enable_fb_check).grid(row=1, column=6, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(self.advanced_frame, text="FB 容差 px").grid(row=1, column=8, sticky="w", pady=(6, 0))
-        ttk.Entry(self.advanced_frame, textvariable=self.fb_tolerance_px, width=7).grid(row=1, column=9, padx=(3, 10), pady=(6, 0))
-
-        ttk.Label(self.advanced_frame, text="最小灰度标准差").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.advanced_frame, textvariable=self.min_texture_std, width=8).grid(row=2, column=1, padx=(3, 10), pady=(6, 0))
-        ttk.Label(self.advanced_frame, text="最小 P95-P5 对比度").grid(row=2, column=2, sticky="w", pady=(6, 0))
-        ttk.Entry(self.advanced_frame, textvariable=self.min_texture_contrast, width=8).grid(row=2, column=3, padx=(3, 10), pady=(6, 0))
-        ttk.Label(self.advanced_frame, text="最大近黑/近白比例").grid(row=2, column=4, sticky="w", pady=(6, 0))
-        ttk.Entry(self.advanced_frame, textvariable=self.max_saturated_frac, width=8).grid(row=2, column=5, padx=(3, 10), pady=(6, 0))
-        ttk.Label(self.advanced_frame, text="overlay 间隔").grid(row=2, column=6, sticky="w", pady=(6, 0))
-        ttk.Entry(self.advanced_frame, textvariable=self.overlay_every, width=7).grid(row=2, column=7, padx=(3, 10), pady=(6, 0))
+        self.advanced_frame = ttk.LabelFrame(measure_frame, text="高级设置", padding=(8, 6))
+        self.advanced_frame.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(8, 0))
+        self._build_advanced_controls()
         self.advanced_frame.grid_remove()
 
-        group_frame = ttk.LabelFrame(left, text="3. ROI 设置", padding=6)
-        group_frame.pack(fill=tk.X, side=tk.TOP, pady=(8, 0))
+    def _build_advanced_controls(self):
+        advanced_fields = [
+            ("搜索半径 px", self.search_radius, 7),
+            ("严格接受阈值", self.hard_corr, 7),
+            ("弱接受阈值", self.soft_corr, 7),
+            ("单帧应变突变上限", self.max_frame_strain_jump, 8),
+            ("FB 容差 px", self.fb_tolerance_px, 7),
+            ("模板跟随系数", self.template_alpha, 7),
+            ("最小灰度标准差", self.min_texture_std, 8),
+            ("最小 P95-P5 对比度", self.min_texture_contrast, 8),
+            ("最大近黑/近白比例", self.max_saturated_frac, 8),
+            ("overlay 间隔", self.overlay_every, 7),
+        ]
+        for idx, (label, variable, width) in enumerate(advanced_fields):
+            row = idx // 3
+            col = (idx % 3) * 2
+            ttk.Label(self.advanced_frame, text=label).grid(row=row, column=col, sticky="w", padx=(0, 4), pady=3)
+            ttk.Entry(self.advanced_frame, textvariable=variable, width=width).grid(
+                row=row, column=col + 1, sticky="w", padx=(0, 14), pady=3
+            )
 
-        buttons = ttk.Frame(group_frame)
-        buttons.pack(fill=tk.X)
-        self.roi1_button = ttk.Button(buttons, text="画 ROI 1", command=lambda: self.set_roi_mode(1))
-        self.roi1_button.grid(row=0, column=0, padx=3, pady=2, sticky="w")
+        option_row = (len(advanced_fields) + 2) // 3
+        ttk.Checkbutton(self.advanced_frame, text="启用自适应弱接受", variable=self.enable_adaptive).grid(
+            row=option_row, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
+        ttk.Checkbutton(self.advanced_frame, text="使用前一帧模板跟随", variable=self.use_prev_frame_template).grid(
+            row=option_row, column=2, columnspan=2, sticky="w", pady=(6, 0)
+        )
+        ttk.Checkbutton(self.advanced_frame, text="前后向一致性检查", variable=self.enable_fb_check).grid(
+            row=option_row, column=4, columnspan=2, sticky="w", pady=(6, 0)
+        )
+
+    def _build_roi_section(self, parent):
+        group_frame = ttk.LabelFrame(parent, text="3. ROI 设置", padding=(10, 8))
+        group_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        group_frame.columnconfigure(0, weight=1)
+
+        tool_row = ttk.Frame(group_frame, style="Card.TFrame")
+        tool_row.grid(row=0, column=0, sticky="ew")
+        self.roi1_button = ttk.Button(tool_row, text="画 ROI 1", command=lambda: self.set_roi_mode(1), style="Compact.TButton")
+        self.roi1_button.grid(row=0, column=0, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(self.roi1_button, "切换到 ROI 1 绘制模式；在图像上按住鼠标左键拖出矩形，建议覆盖清晰散斑区域。")
-        self.roi2_button = ttk.Button(buttons, text="画 ROI 2", command=lambda: self.set_roi_mode(2))
-        self.roi2_button.grid(row=0, column=1, padx=3, pady=2, sticky="w")
+        self.roi2_button = ttk.Button(tool_row, text="画 ROI 2", command=lambda: self.set_roi_mode(2), style="Compact.TButton")
+        self.roi2_button.grid(row=0, column=1, padx=(0, 12), pady=2, sticky="w")
         self.add_tooltip(self.roi2_button, "切换到 ROI 2 绘制模式；ROI 2 与 ROI 1 的中心距就是虚拟引伸计标距。")
-        self.align_x_button = ttk.Button(buttons, text="水平对齐→横向应变", command=lambda: self.align_current_pair("x", set_mode=True))
-        self.align_x_button.grid(row=0, column=2, padx=3, pady=2, sticky="w")
+        self.align_x_button = ttk.Button(tool_row, text="水平对齐→横向应变", command=lambda: self.align_current_pair("x", set_mode=True), style="Compact.TButton")
+        self.align_x_button.grid(row=0, column=2, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(self.align_x_button, "强制 ROI1/ROI2 中心 y 相同，并把应变方向设为横向；适合左右分开的两个 ROI。")
-        self.align_y_button = ttk.Button(buttons, text="垂直对齐→纵向应变", command=lambda: self.align_current_pair("y", set_mode=True))
-        self.align_y_button.grid(row=0, column=3, padx=3, pady=2, sticky="w")
+        self.align_y_button = ttk.Button(tool_row, text="垂直对齐→纵向应变", command=lambda: self.align_current_pair("y", set_mode=True), style="Compact.TButton")
+        self.align_y_button.grid(row=0, column=3, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(self.align_y_button, "强制 ROI1/ROI2 中心 x 相同，并把应变方向设为纵向；适合上下分开的两个 ROI。")
 
-        ttk.Label(buttons, text="组名：").grid(row=1, column=0, padx=(3, 2), pady=2, sticky="w")
-        ttk.Entry(buttons, textvariable=self.group_name_var, width=14).grid(row=1, column=1, padx=3, pady=2, sticky="w")
-        ttk.Label(buttons, text="角色：").grid(row=1, column=2, padx=(3, 2), pady=2, sticky="w")
+        form_row = ttk.Frame(group_frame, style="Card.TFrame")
+        form_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ttk.Label(form_row, text="组名：").grid(row=0, column=0, padx=(0, 4), pady=2, sticky="w")
+        ttk.Entry(form_row, textvariable=self.group_name_var, width=13).grid(row=0, column=1, padx=(0, 12), pady=2, sticky="w")
+        ttk.Label(form_row, text="角色：").grid(row=0, column=2, padx=(0, 4), pady=2, sticky="w")
         role_box = ttk.Combobox(
-            buttons,
+            form_row,
             textvariable=self.roi_role_display,
             values=list(ROI_ROLE_LABEL_TO_VALUE.keys()),
             width=10,
             state="readonly",
         )
-        role_box.grid(row=1, column=3, padx=3, pady=2, sticky="w")
+        role_box.grid(row=0, column=3, padx=(0, 12), pady=2, sticky="w")
         role_box.bind("<<ComboboxSelected>>", self.sync_roi_role_from_display)
         self.add_tooltip(role_box, "普通组只导出该组应变；若要导出泊松比，请把一组设为拉伸方向，另一组设为横向方向。")
-
-        self.add_group_button = ttk.Button(buttons, text="添加当前 ROI 为一组", command=self.add_current_group)
-        self.add_group_button.grid(row=1, column=4, padx=3, pady=2, sticky="w")
+        self.add_group_button = ttk.Button(form_row, text="添加当前 ROI 为一组", command=self.add_current_group, style="Compact.TButton")
+        self.add_group_button.grid(row=0, column=4, pady=2, sticky="w")
         self.add_tooltip(self.add_group_button, "把当前 ROI1/ROI2 保存为一组虚拟引伸计；每组会独立追踪并导出应变曲线。")
-        self.update_group_button = ttk.Button(buttons, text="更新选中组", command=self.update_selected_group)
-        self.update_group_button.grid(row=2, column=0, padx=3, pady=2, sticky="w")
+
+        action_row = ttk.Frame(group_frame, style="Card.TFrame")
+        action_row.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        self.update_group_button = ttk.Button(action_row, text="更新选中组", command=self.update_selected_group, style="Compact.TButton")
+        self.update_group_button.grid(row=0, column=0, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(self.update_group_button, "用当前 ROI1/ROI2 覆盖列表中选中的组；适合重画后修正已有组。")
-        self.load_group_button = ttk.Button(buttons, text="载入选中组", command=self.load_selected_group)
-        self.load_group_button.grid(row=2, column=1, padx=3, pady=2, sticky="w")
+        self.load_group_button = ttk.Button(action_row, text="载入选中组", command=self.load_selected_group, style="Compact.TButton")
+        self.load_group_button.grid(row=0, column=1, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(self.load_group_button, "把列表中选中的 ROI 组载回当前编辑状态，便于检查、微调或更新。")
-        self.delete_group_button = ttk.Button(buttons, text="删除选中组", command=self.delete_selected_group)
-        self.delete_group_button.grid(row=2, column=2, padx=3, pady=2, sticky="w")
+        self.delete_group_button = ttk.Button(action_row, text="删除选中组", command=self.delete_selected_group, style="Compact.TButton")
+        self.delete_group_button.grid(row=0, column=2, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(self.delete_group_button, "从列表中删除选中的 ROI 组，不会删除已经导出的文件。")
-        self.clear_rois_button = ttk.Button(buttons, text="清除当前 ROI", command=self.clear_current_rois)
-        self.clear_rois_button.grid(row=2, column=3, padx=3, pady=2, sticky="w")
+        self.clear_rois_button = ttk.Button(action_row, text="清除当前 ROI", command=self.clear_current_rois, style="Compact.TButton")
+        self.clear_rois_button.grid(row=0, column=3, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(self.clear_rois_button, "只清空当前正在编辑的 ROI1/ROI2；已经添加到列表中的 ROI 组不受影响。")
 
+        tree_frame = ttk.Frame(group_frame, style="Card.TFrame")
+        tree_frame.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        tree_frame.columnconfigure(0, weight=1)
         columns = ("name", "role", "selected", "actual", "L0", "dx", "dy", "roi1", "roi2")
-        self.group_tree = ttk.Treeview(group_frame, columns=columns, show="headings", height=4)
+        self.group_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=3)
         for col, width in [
-            ("name", 70), ("role", 70), ("selected", 65), ("actual", 65), ("L0", 70),
-            ("dx", 65), ("dy", 65), ("roi1", 150), ("roi2", 150)
+            ("name", 66), ("role", 66), ("selected", 58), ("actual", 58), ("L0", 64),
+            ("dx", 54), ("dy", 54), ("roi1", 120), ("roi2", 120)
         ]:
             self.group_tree.heading(col, text=col)
-            self.group_tree.column(col, width=width, minwidth=50, anchor="center")
-        self.group_tree.pack(fill=tk.X, pady=(6, 0))
+            self.group_tree.column(col, width=width, minwidth=45, anchor="center", stretch=True)
+        self.group_tree.grid(row=0, column=0, sticky="ew")
+        tree_scroll_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.group_tree.xview)
+        self.group_tree.configure(xscrollcommand=tree_scroll_x.set)
+        tree_scroll_x.grid(row=1, column=0, sticky="ew")
         self.group_tree.bind("<Double-1>", lambda event: self.load_selected_group())
 
-        middle = ttk.Frame(left)
-        middle.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+    def _build_image_section(self, parent):
+        self.image_frame = ttk.LabelFrame(parent, text="图像区：拖动画当前 ROI；绿色线为已添加的 ROI 组", padding=4)
+        self.image_frame.grid(row=1, column=0, sticky="nsew")
+        self.image_frame.columnconfigure(0, weight=1)
+        self.image_frame.rowconfigure(0, weight=1)
 
-        image_frame = ttk.LabelFrame(middle, text="图像区：拖动画当前 ROI；绿色线为已添加的 ROI 组", padding=4)
-        image_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self.canvas = tk.Canvas(image_frame, bg="#202020", cursor="crosshair")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(self.image_frame, bg="#111827", cursor="crosshair", highlightthickness=0, width=640, height=250)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_down)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
 
-        side = ttk.LabelFrame(main, text="4. 分析与导出", padding=8)
-        side.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
-        side.columnconfigure(0, weight=1)
+    def _build_analysis_section(self, parent):
+        self.analysis_frame = ttk.LabelFrame(parent, text="4. 分析与导出", padding=(8, 8))
+        self.analysis_frame.grid(row=0, column=1, sticky="ns")
+        self.analysis_frame.columnconfigure(0, weight=1)
 
-        workflow_frame = ttk.LabelFrame(side, text="新手流程", padding=8)
-        workflow_frame.pack(fill=tk.X, pady=(0, 6))
+        workflow_frame = ttk.LabelFrame(self.analysis_frame, text="新手流程", padding=(6, 4))
+        workflow_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self.workflow_step_texts = [
             "1. 选择图像文件夹和输出文件夹",
             "2. 加载图像序列，确认预览帧",
@@ -1550,44 +1688,45 @@ class MultiROIGUI:
             "5. 确认导出内容，点击开始分析",
         ]
         self.workflow_labels = []
-        for step in self.workflow_step_texts:
-            label = ttk.Label(workflow_frame, text=step, style="StepTitle.TLabel", wraplength=330)
-            label.pack(anchor="w", pady=1)
-            self.workflow_labels.append(label)
+        workflow_compact = " → ".join(["选文件", "加载", "设范围", "加 ROI", "开始分析"])
+        label = ttk.Label(workflow_frame, text=workflow_compact, style="StepTitle.TLabel", wraplength=300)
+        label.pack(anchor="w", pady=1)
+        self.workflow_labels.append(label)
         self.workflow_hint_var = tk.StringVar(
-            value="下一步：确认 ROI 在起始/参考帧上绘制；泊松比需要拉伸方向和横向方向各一组。"
+            value="下一步：在参考帧画 ROI；泊松比需轴向/横向各一组。"
         )
         ttk.Label(
             workflow_frame,
             textvariable=self.workflow_hint_var,
             style="Hint.TLabel",
             justify=tk.LEFT,
-            wraplength=330,
-        ).pack(anchor="w", pady=(4, 0))
+            wraplength=300,
+        ).pack(anchor="w", pady=(2, 0))
 
-        action_frame = ttk.LabelFrame(side, text="准备好后", padding=10)
-        action_frame.pack(fill=tk.X, pady=(0, 6))
+        action_frame = ttk.LabelFrame(self.analysis_frame, text="准备好后", padding=(6, 5))
+        action_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        action_frame.columnconfigure(0, weight=1)
         self.start_button = ttk.Button(
             action_frame,
             text="开始分析并导出结果",
             command=self.start_processing,
             style="Primary.TButton",
         )
-        self.start_button.pack(fill=tk.X)
+        self.start_button.grid(row=0, column=0, sticky="ew")
         self.add_tooltip(
             self.start_button,
             "点击后开始分析：程序会先检查图像、分析范围和 ROI 组；通过后批量追踪 ROI，并导出你勾选的 TXT/PNG/CSV 结果。",
         )
         ttk.Label(
             action_frame,
-            text="开始前请确认：图像已加载、分析范围正确、ROI 组已添加。",
+            text="确认图像、范围和 ROI 组后再开始。",
             style="Hint.TLabel",
             justify=tk.LEFT,
-            wraplength=330,
-        ).pack(anchor="w", pady=(5, 0))
+            wraplength=300,
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
 
-        export_frame = ttk.LabelFrame(side, text="导出内容", padding=6)
-        export_frame.pack(fill=tk.X, pady=(0, 6))
+        export_frame = ttk.LabelFrame(self.analysis_frame, text="导出内容", padding=(6, 4))
+        export_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         export_options = [
             ("Origin TXT（三列核心数据）", self.export_origin_txt, "导出 Frame、EngineeringStrain、TrueStrain 三列文本，适合直接导入 Origin。"),
             ("Origin OPJU 项目（直接导入 OriginPro）", self.export_origin_opju, "启动/连接 OriginPro，把核心数据表写入工作簿并保存为 ezDIC_results.opju；需要 OriginPro 2021+ 和 originpro 包。"),
@@ -1600,38 +1739,69 @@ class MultiROIGUI:
         ]
         self.export_checkbuttons = []
         for idx, (text, variable, tooltip) in enumerate(export_options):
-            checkbutton = ttk.Checkbutton(export_frame, text=text, variable=variable)
-            checkbutton.grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, 10), pady=1)
+            checkbutton = tk.Checkbutton(
+                export_frame,
+                text=text,
+                variable=variable,
+                anchor="w",
+                justify=tk.LEFT,
+                wraplength=300,
+                bg=self.card_bg,
+                fg=self.text_color,
+                activebackground=self.card_bg,
+                activeforeground=self.text_color,
+                selectcolor=self.card_bg,
+                relief=tk.FLAT,
+                borderwidth=0,
+                highlightthickness=0,
+            )
+            checkbutton.grid(row=idx // 2, column=idx % 2, sticky="ew", padx=(0, 6), pady=1)
             self.add_tooltip(checkbutton, tooltip)
             self.export_checkbuttons.append(checkbutton)
         export_frame.columnconfigure(0, weight=1)
         export_frame.columnconfigure(1, weight=1)
 
-        status_frame = ttk.LabelFrame(side, text="运行状态", padding=6)
-        status_frame.pack(fill=tk.X, pady=(0, 6))
-        self.progress = ttk.Progressbar(status_frame, orient=tk.HORIZONTAL, mode="determinate", length=330)
-        self.progress.pack(fill=tk.X, pady=(0, 6))
+        status_frame = ttk.LabelFrame(self.analysis_frame, text="运行状态", padding=(6, 4))
+        status_frame.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        status_frame.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(status_frame, orient=tk.HORIZONTAL, mode="determinate")
+        self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
         self.status_var = tk.StringVar(value="未加载图像")
-        ttk.Label(status_frame, textvariable=self.status_var, style="Hint.TLabel", wraplength=330).pack(anchor="w")
+        ttk.Label(status_frame, textvariable=self.status_var, style="Hint.TLabel", wraplength=300).grid(row=1, column=0, sticky="w")
 
-        self.log_text = tk.Text(side, width=48, height=8, wrap=tk.WORD)
-        self.log_text.pack(fill=tk.BOTH, expand=True)
+        self.log_text = tk.Text(
+            self.analysis_frame,
+            width=36,
+            height=3,
+            wrap=tk.WORD,
+            bg="#0f172a",
+            fg="#e5e7eb",
+            insertbackground="#e5e7eb",
+            relief=tk.FLAT,
+            padx=8,
+            pady=6,
+        )
+        self.log_text.grid(row=4, column=0, sticky="nsew")
+        self.analysis_frame.rowconfigure(4, weight=1)
 
-        notice_frame = ttk.Frame(side)
-        notice_frame.pack(fill=tk.X, pady=(6, 0))
+        notice_frame = ttk.Frame(self.analysis_frame, style="Card.TFrame")
+        notice_frame.grid(row=5, column=0, sticky="ew", pady=(6, 0))
+        notice_frame.columnconfigure(0, weight=1)
         ttk.Label(
             notice_frame,
             text=f"Developed by {APP_DEVELOPER} | DOI: {APP_DOI}",
             foreground="#555555",
             justify=tk.LEFT,
-        ).pack(anchor="w")
+            wraplength=300,
+        ).grid(row=0, column=0, sticky="w")
         self.usage_notice_button = ttk.Button(
             notice_frame,
             text="About / Citation / Usage Notice",
             command=self.show_usage_notice,
+            style="Compact.TButton",
         )
-        self.usage_notice_button.pack(fill=tk.X, pady=(4, 0))
+        self.usage_notice_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
         self.add_tooltip(self.usage_notice_button, "查看开发者署名、推荐引用格式、DOI 和授权使用说明。")
 
     def sync_strain_mode_from_display(self, event=None):

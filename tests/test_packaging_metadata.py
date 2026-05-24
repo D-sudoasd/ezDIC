@@ -155,6 +155,44 @@ def test_gui_minimum_size_does_not_clip_requested_layout(gui_app):
     assert min_h >= root.winfo_reqheight()
 
 
+def test_gui_layout_fits_research_laptop_viewport(gui_app):
+    root, app = gui_app
+    root.deiconify()
+    root.geometry("1366x768+0+0")
+    root.update()
+    root.update_idletasks()
+
+    min_w, min_h = root.minsize()
+    assert min_w <= 1366
+    assert min_h <= 768
+
+    for attr in [
+        "project_frame",
+        "controls_canvas",
+        "controls_panel",
+        "image_frame",
+        "analysis_frame",
+    ]:
+        assert getattr(app, attr, None) is not None
+
+    root_w = root.winfo_width()
+    root_h = root.winfo_height()
+    root_x = root.winfo_rootx()
+    root_y = root.winfo_rooty()
+    for widget in [app.canvas, app.group_tree, app.start_button, app.progress, app.log_text]:
+        assert widget.winfo_width() > 20
+        assert widget.winfo_height() > 10
+        x0 = widget.winfo_rootx() - root_x
+        y0 = widget.winfo_rooty() - root_y
+        x1 = x0 + widget.winfo_width()
+        y1 = y0 + widget.winfo_height()
+        assert 0 <= x0 < root_w
+        assert 0 <= y0 < root_h
+        assert x1 <= root_w
+        assert y1 <= root_h
+    root.withdraw()
+
+
 def test_gui_beginner_workflow_and_key_button_tooltips_are_available(gui_app):
     _root, app = gui_app
 
