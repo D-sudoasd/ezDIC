@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import subprocess
 import time
 
 import cv2
@@ -209,6 +211,111 @@ def test_gui_beginner_workflow_and_key_button_tooltips_are_available(gui_app):
     for name, widget, expected_text in tooltip_targets:
         assert widget is not None, f"{name} should be available for GUI tests"
         assert expected_text in getattr(widget, "_tooltip_text", "")
+
+
+def test_gui_primary_interactive_controls_have_scientific_tooltips(gui_app):
+    _root, app = gui_app
+
+    required_attrs = [
+        "image_folder_entry",
+        "select_image_button",
+        "output_folder_entry",
+        "select_output_button",
+        "load_images_button",
+        "preview_frame_entry",
+        "show_preview_button",
+        "prev_frame_button",
+        "next_frame_button",
+        "start_frame_entry",
+        "end_frame_entry",
+        "set_start_button",
+        "set_end_button",
+        "strain_mode_box",
+        "tracking_preset_box",
+        "pixel_size_entry",
+        "auto_align_roi2_check",
+        "advanced_toggle_btn",
+        "search_radius_entry",
+        "hard_corr_entry",
+        "soft_corr_entry",
+        "max_frame_strain_jump_entry",
+        "fb_tolerance_entry",
+        "template_alpha_entry",
+        "min_texture_std_entry",
+        "min_texture_contrast_entry",
+        "max_saturated_frac_entry",
+        "overlay_every_entry",
+        "enable_adaptive_check",
+        "use_prev_frame_template_check",
+        "enable_fb_check_check",
+        "roi1_button",
+        "roi2_button",
+        "align_x_button",
+        "align_y_button",
+        "group_name_entry",
+        "roi_role_box",
+        "add_group_button",
+        "update_group_button",
+        "load_group_button",
+        "delete_group_button",
+        "clear_rois_button",
+        "group_tree",
+        "canvas",
+        "start_button",
+        "usage_notice_button",
+    ]
+
+    for attr in required_attrs:
+        widget = getattr(app, attr, None)
+        assert widget is not None, f"{attr} should be stored for GUI help verification"
+        tooltip = getattr(widget, "_tooltip_text", "").strip()
+        assert len(tooltip) >= 24, f"{attr} should have a practical tooltip"
+
+    for checkbutton in app.export_checkbuttons:
+        tooltip = getattr(checkbutton, "_tooltip_text", "").strip()
+        assert len(tooltip) >= 24
+
+    assert "调大" in app.search_radius_entry._tooltip_text
+    assert "留空" in app.pixel_size_entry._tooltip_text
+    assert "勾选" in app.auto_align_roi2_check._tooltip_text
+
+
+def test_gui_key_settings_use_light_visual_emphasis(gui_app):
+    _root, app = gui_app
+
+    assert app.analysis_range_label.cget("style") == "Key.TLabel"
+    assert app.strain_mode_label.cget("style") == "Key.TLabel"
+    assert app.export_hint_label.cget("style") == "Warning.TLabel"
+    assert app.start_button.cget("style") == "Primary.TButton"
+
+
+def test_windows_launcher_bat_invokes_source_entry_in_smoke_mode():
+    launcher = ROOT / "start_ezDIC.bat"
+
+    assert launcher.exists()
+    text = launcher.read_text(encoding="utf-8")
+    assert 'pushd "%~dp0"' in text
+    assert "dic_virtual_extensometer_gui_v7_multi_roi_range.py" in text
+    assert "pause" in text.lower()
+
+    if os.name != "nt":
+        pytest.skip("Windows launcher smoke test requires cmd.exe")
+
+    env = os.environ.copy()
+    env["EZDIC_LAUNCHER_SMOKE_TEST"] = "1"
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", str(launcher)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "EZDIC launcher smoke test" in output
+    assert "dic_virtual_extensometer_gui_v7_multi_roi_range.py" in output
 
 
 def test_gui_includes_origin_opju_export_option_disabled_by_default(gui_app):
