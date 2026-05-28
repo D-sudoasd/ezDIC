@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 title ezDIC launcher
 
 pushd "%~dp0" || (
@@ -10,6 +10,9 @@ pushd "%~dp0" || (
 )
 
 set "ENTRY=dic_virtual_extensometer_gui_v7_multi_roi_range.py"
+set "REQ=requirements.txt"
+set "VENV_PY=.venv\Scripts\python.exe"
+set "REQ_MARKER=.venv\.ezDIC_requirements.txt"
 
 if not exist "%ENTRY%" (
     echo [ERROR] Cannot find the ezDIC entry script:
@@ -20,25 +23,58 @@ if not exist "%ENTRY%" (
     exit /b 1
 )
 
-if exist ".venv\Scripts\python.exe" (
-    set "PYTHON_CMD=.venv\Scripts\python.exe"
-) else (
+if not exist "%VENV_PY%" (
+    set "BASE_PYTHON="
     where py >nul 2>nul
-    if not errorlevel 1 (
-        set "PYTHON_CMD=py -3"
-    ) else (
+    if not errorlevel 1 set "BASE_PYTHON=py -3"
+
+    if not defined BASE_PYTHON (
         where python >nul 2>nul
-        if not errorlevel 1 (
-            set "PYTHON_CMD=python"
-        ) else (
-            echo [ERROR] Python was not found.
-            echo Install Python 3, or create .venv and install dependencies:
-            echo     py -m venv .venv
-            echo     .venv\Scripts\python.exe -m pip install -r requirements.txt
+        if not errorlevel 1 set "BASE_PYTHON=python"
+    )
+
+    if not defined BASE_PYTHON (
+        echo [ERROR] Python was not found.
+        echo Install Python 3, then double-click this file again.
+        echo.
+        popd
+        pause
+        exit /b 1
+    )
+
+    echo Creating local Python environment: %CD%\.venv
+    !BASE_PYTHON! -m venv .venv
+    if errorlevel 1 (
+        echo [ERROR] Failed to create .venv.
+        echo.
+        popd
+        pause
+        exit /b 1
+    )
+)
+
+set "PYTHON_CMD=%VENV_PY%"
+
+if exist "%REQ%" (
+    set "NEED_INSTALL="
+    if not exist "%REQ_MARKER%" (
+        set "NEED_INSTALL=1"
+    ) else (
+        fc /b "%REQ%" "%REQ_MARKER%" >nul 2>nul
+        if errorlevel 1 set "NEED_INSTALL=1"
+    )
+
+    if defined NEED_INSTALL (
+        echo Installing or updating ezDIC dependencies...
+        "%PYTHON_CMD%" -m pip install -r "%REQ%"
+        if errorlevel 1 (
+            echo [ERROR] Dependency installation failed.
+            echo.
             popd
             pause
             exit /b 1
         )
+        copy /y "%REQ%" "%REQ_MARKER%" >nul
     )
 )
 
@@ -57,14 +93,12 @@ echo Python: %PYTHON_CMD%
 echo Entry: %ENTRY%
 echo.
 
-%PYTHON_CMD% "%ENTRY%"
+"%PYTHON_CMD%" "%ENTRY%"
 set "EXITCODE=%ERRORLEVEL%"
 
 if not "%EXITCODE%"=="0" (
     echo.
     echo [ERROR] ezDIC exited with code %EXITCODE%.
-    echo If dependencies are missing, run:
-    echo     %PYTHON_CMD% -m pip install -r requirements.txt
     echo.
     pause
 )
