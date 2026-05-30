@@ -1369,7 +1369,7 @@ class MultiROIGUI:
     def configure_final_window_limits(self):
         self.root.update_idletasks()
         # 给一个更宽松的最小尺寸，避免在普通科研笔记本上启动就感觉拥挤
-        self.root.minsize(1120, 680)
+        self.root.minsize(1120, 740)
 
     def add_tooltip(self, widget, text):
         self.tooltips.append(ToolTip(widget, text))
@@ -1548,11 +1548,15 @@ class MultiROIGUI:
 
         seq_buttons = ttk.Frame(self.project_frame, style="Card.TFrame")
         seq_buttons.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
-        for col in (8, 9):
-            seq_buttons.columnconfigure(col, weight=1)
+        seq_buttons.columnconfigure(0, weight=1)
+
+        preview_row = ttk.Frame(seq_buttons, style="Card.TFrame")
+        preview_row.grid(row=0, column=0, sticky="ew")
+        range_row = ttk.Frame(seq_buttons, style="Card.TFrame")
+        range_row.grid(row=1, column=0, sticky="ew", pady=(3, 0))
 
         self.load_images_button = ttk.Button(
-            seq_buttons,
+            preview_row,
             text="加载图像序列",
             command=self.load_first_image,
             style="Compact.TButton",
@@ -1568,21 +1572,21 @@ class MultiROIGUI:
             "输入要查看的 1-based 帧号，只影响当前显示和设置起止帧，不会直接改变分析结果。"
             "推荐检查参考帧、变形中段和结束帧，避免把模糊或离开视场的帧纳入分析。"
         )
-        self.preview_frame_label = ttk.Label(seq_buttons, text="预览帧：")
+        self.preview_frame_label = ttk.Label(preview_row, text="预览帧：")
         self.preview_frame_label.grid(row=0, column=1, padx=(0, 3), sticky="w")
         self.add_tooltip(self.preview_frame_label, preview_tip)
-        self.preview_frame_entry = ttk.Entry(seq_buttons, textvariable=self.preview_frame_1based, width=6)
+        self.preview_frame_entry = ttk.Entry(preview_row, textvariable=self.preview_frame_1based, width=6)
         self.preview_frame_entry.grid(row=0, column=2, padx=(0, 4), sticky="w")
         self.add_tooltip(self.preview_frame_entry, preview_tip)
-        self.show_preview_button = ttk.Button(seq_buttons, text="显示", command=self.go_to_preview_frame, style="Compact.TButton")
+        self.show_preview_button = ttk.Button(preview_row, text="显示", command=self.go_to_preview_frame, style="Compact.TButton")
         self.show_preview_button.grid(row=0, column=3, padx=(0, 4), sticky="w")
         self.add_tooltip(self.show_preview_button, preview_tip)
 
-        self.prev_frame_button = ttk.Button(seq_buttons, text="上一帧", command=lambda: self.step_preview_frame(-1), style="Compact.TButton")
+        self.prev_frame_button = ttk.Button(preview_row, text="上一帧", command=lambda: self.step_preview_frame(-1), style="Compact.TButton")
         self.prev_frame_button.grid(row=0, column=4, padx=(0, 4), sticky="w")
         self.add_tooltip(self.prev_frame_button, "向前预览一帧，不改变已设置的分析范围；用于快速检查 ROI 是否仍在视场内。")
 
-        self.next_frame_button = ttk.Button(seq_buttons, text="下一帧", command=lambda: self.step_preview_frame(1), style="Compact.TButton")
+        self.next_frame_button = ttk.Button(preview_row, text="下一帧", command=lambda: self.step_preview_frame(1), style="Compact.TButton")
         self.next_frame_button.grid(row=0, column=5, padx=(0, 14), sticky="w")
         self.add_tooltip(self.next_frame_button, "向后预览一帧，不改变已设置的分析范围；用于快速检查 ROI 是否仍在视场内。")
 
@@ -1590,32 +1594,32 @@ class MultiROIGUI:
             "设置参与批量追踪的起始帧和结束帧，均为 1-based 帧号。"
             "起始帧也是 ROI 模板参考帧；改变起始帧后应在新参考帧重画 ROI，常见误用是先画 ROI 再改参考帧。"
         )
-        self.analysis_range_label = ttk.Label(seq_buttons, text="分析范围：", style="Key.TLabel")
-        self.analysis_range_label.grid(row=0, column=6, padx=(0, 3), sticky="w")
+        self.analysis_range_label = ttk.Label(range_row, text="分析范围：", style="Key.TLabel")
+        self.analysis_range_label.grid(row=0, column=0, padx=(0, 3), sticky="w")
         self.add_tooltip(self.analysis_range_label, analysis_range_tip)
-        self.start_frame_entry = ttk.Entry(seq_buttons, textvariable=self.start_frame_1based, width=6)
-        self.start_frame_entry.grid(row=0, column=7, padx=(0, 3), sticky="w")
+        self.start_frame_entry = ttk.Entry(range_row, textvariable=self.start_frame_1based, width=6)
+        self.start_frame_entry.grid(row=0, column=1, padx=(0, 3), sticky="w")
         self.add_tooltip(self.start_frame_entry, analysis_range_tip)
-        ttk.Label(seq_buttons, text="到").grid(row=0, column=8, padx=(0, 3), sticky="w")
-        self.end_frame_entry = ttk.Entry(seq_buttons, textvariable=self.end_frame_1based, width=6)
-        self.end_frame_entry.grid(row=0, column=9, padx=(0, 8), sticky="w")
+        ttk.Label(range_row, text="到").grid(row=0, column=2, padx=(0, 3), sticky="w")
+        self.end_frame_entry = ttk.Entry(range_row, textvariable=self.end_frame_1based, width=6)
+        self.end_frame_entry.grid(row=0, column=3, padx=(0, 8), sticky="w")
         self.add_tooltip(self.end_frame_entry, analysis_range_tip)
 
         self.set_start_button = ttk.Button(
-            seq_buttons,
+            range_row,
             text="当前帧设为起始/参考",
             command=self.set_start_to_current,
             style="Compact.TButton",
         )
-        self.set_start_button.grid(row=0, column=10, padx=(0, 4), sticky="w")
+        self.set_start_button.grid(row=0, column=4, padx=(0, 4), sticky="w")
         self.add_tooltip(
             self.set_start_button,
             "把当前预览帧设为起始/参考帧；ROI 模板必须在这张图上绘制。"
             "如果已经添加 ROI 组，修改参考帧通常需要清空并重画，否则模板和图像可能不对应。",
         )
 
-        self.set_end_button = ttk.Button(seq_buttons, text="当前帧设为结束", command=self.set_end_to_current, style="Compact.TButton")
-        self.set_end_button.grid(row=0, column=11, sticky="w")
+        self.set_end_button = ttk.Button(range_row, text="当前帧设为结束", command=self.set_end_to_current, style="Compact.TButton")
+        self.set_end_button.grid(row=0, column=5, sticky="w")
         self.add_tooltip(
             self.set_end_button,
             "把当前预览帧设为批量追踪的最后一帧。常用于避开断裂后、失焦、样品离开视场或夹具遮挡的后段图像；结束帧不能早于起始帧。",
@@ -1624,7 +1628,7 @@ class MultiROIGUI:
     def _build_workspace(self, parent):
         workspace = ttk.Frame(parent, style="App.TFrame")
         workspace.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
-        workspace.columnconfigure(0, weight=3)   # 图像区占更多
+        workspace.columnconfigure(0, weight=4)   # 图像区占更多
         workspace.columnconfigure(1, weight=2)   # 右侧分析区在宽屏时也能合理扩展，避免过度拥挤
         workspace.rowconfigure(0, weight=1)
 
@@ -1645,7 +1649,7 @@ class MultiROIGUI:
 
         self.controls_canvas = tk.Canvas(
             self.controls_frame,
-            height=280,   # 略微增加，给多组 ROI + 高级设置更多空间，减少上下遮挡
+            height=230,   # 控制区可滚动；把更多首屏高度留给图像画布
             bg=self.ui_bg,
             highlightthickness=1,
             highlightbackground=self.border_color,
@@ -1898,14 +1902,14 @@ class MultiROIGUI:
             "两个 ROI 太近会放大噪声，太远则更容易受视场边界或局部非均匀变形影响。",
         )
         self.align_x_button = ttk.Button(tool_row, text="水平对齐→横向应变", command=lambda: self.align_current_pair("x", set_mode=True), style="Compact.TButton")
-        self.align_x_button.grid(row=0, column=2, padx=(0, 6), pady=2, sticky="w")
+        self.align_x_button.grid(row=1, column=0, columnspan=2, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(
             self.align_x_button,
             "强制 ROI1/ROI2 中心 y 坐标相同，并把应变方向设为 x。"
             "适合左右分开的标距；如果实际标距不是水平的，强制对齐会改变物理测量方向。",
         )
         self.align_y_button = ttk.Button(tool_row, text="垂直对齐→纵向应变", command=lambda: self.align_current_pair("y", set_mode=True), style="Compact.TButton")
-        self.align_y_button.grid(row=0, column=3, padx=(0, 6), pady=2, sticky="w")
+        self.align_y_button.grid(row=1, column=2, columnspan=2, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(
             self.align_y_button,
             "强制 ROI1/ROI2 中心 x 坐标相同，并把应变方向设为 y。"
@@ -1942,7 +1946,7 @@ class MultiROIGUI:
         self.roi_role_box.bind("<<ComboboxSelected>>", self.sync_roi_role_from_display)
         self.add_tooltip(self.roi_role_box, role_tip)
         self.add_group_button = ttk.Button(form_row, text="添加当前 ROI 为一组", command=self.add_current_group, style="Compact.TButton")
-        self.add_group_button.grid(row=0, column=4, pady=2, sticky="w")
+        self.add_group_button.grid(row=1, column=0, columnspan=4, pady=(4, 2), sticky="w")
         self.add_tooltip(
             self.add_group_button,
             "把当前 ROI1/ROI2 保存为一组虚拟引伸计；每组会独立追踪并导出应变曲线。"
@@ -1973,7 +1977,7 @@ class MultiROIGUI:
             "如果用于泊松比，删除轴向或横向组会导致泊松比无法导出。",
         )
         self.clear_rois_button = ttk.Button(action_row, text="清除当前 ROI", command=self.clear_current_rois, style="Compact.TButton")
-        self.clear_rois_button.grid(row=0, column=3, padx=(0, 6), pady=2, sticky="w")
+        self.clear_rois_button.grid(row=1, column=0, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(
             self.clear_rois_button,
             "只清空当前正在编辑的 ROI1/ROI2；已经添加到列表中的 ROI 组不受影响。"
@@ -1984,14 +1988,14 @@ class MultiROIGUI:
         tree_frame.grid(row=3, column=0, sticky="ew", pady=(6, 0))
         tree_frame.columnconfigure(0, weight=1)
         columns = ("name", "role", "selected", "actual", "L0", "dx", "dy", "roi1", "roi2")
-        # height=3 太小，多组 ROI 时严重遮挡和滚动不便 → 改为 5~6 更实用
-        self.group_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=5)
+        # 保留水平滚动，首屏优先显示按钮和图像，不让列表请求宽度撑爆窗口。
+        self.group_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=4)
         for col, width in [
-            ("name", 66), ("role", 66), ("selected", 58), ("actual", 58), ("L0", 64),
-            ("dx", 54), ("dy", 54), ("roi1", 120), ("roi2", 120)
+            ("name", 56), ("role", 56), ("selected", 48), ("actual", 48), ("L0", 56),
+            ("dx", 48), ("dy", 48), ("roi1", 90), ("roi2", 90)
         ]:
             self.group_tree.heading(col, text=col)
-            self.group_tree.column(col, width=width, minwidth=45, anchor="center", stretch=True)
+            self.group_tree.column(col, width=width, minwidth=42, anchor="center", stretch=True)
         self.group_tree.grid(row=0, column=0, sticky="ew")
         tree_scroll_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.group_tree.xview)
         self.group_tree.configure(xscrollcommand=tree_scroll_x.set)
@@ -2035,7 +2039,7 @@ class MultiROIGUI:
 
         ttk.Label(img_toolbar, text="提示：拖动窗口边缘可自动提升预览清晰度", style="Hint.TLabel").pack(side=tk.LEFT, padx=4)
 
-        self.canvas = tk.Canvas(self.image_frame, bg="#111827", cursor="crosshair", highlightthickness=0, width=780, height=320)
+        self.canvas = tk.Canvas(self.image_frame, bg="#111827", cursor="crosshair", highlightthickness=0, width=560, height=260)
         self.canvas.grid(row=1, column=0, sticky="nsew")
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_down)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
@@ -2112,10 +2116,11 @@ class MultiROIGUI:
         export_frame = ttk.LabelFrame(self.analysis_frame, text="导出内容", padding=(10, 8))
         export_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         export_frame.columnconfigure(0, weight=1)
+        export_frame.columnconfigure(1, weight=1)
 
         # 快速预设按钮（科研常用组合）—— 使用 grid 以避免与下方 checkbutton 冲突
         preset_bar = ttk.Frame(export_frame, style="Card.TFrame")
-        preset_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        preset_bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
 
         ttk.Button(preset_bar, text="科研推荐", command=self._apply_research_preset, style="Compact.TButton", width=9).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(preset_bar, text="快速查看", command=self._apply_quick_view_preset, style="Compact.TButton", width=9).pack(side=tk.LEFT, padx=(0, 4))
@@ -2140,7 +2145,7 @@ class MultiROIGUI:
                 variable=variable,
                 anchor="w",
                 justify=tk.LEFT,
-                wraplength=360,
+                wraplength=190,
                 bg=self.card_bg,
                 fg=self.text_color,
                 activebackground=self.card_bg,
@@ -2150,8 +2155,8 @@ class MultiROIGUI:
                 borderwidth=0,
                 highlightthickness=0,
             )
-            # 从 row=1 开始，避免与 preset_bar 冲突
-            checkbutton.grid(row=idx + 1, column=0, sticky="w", padx=4, pady=2)
+            # 从 row=1 开始，双列排布减少首屏纵向占位。
+            checkbutton.grid(row=idx // 2 + 1, column=idx % 2, sticky="w", padx=4, pady=2)
             self.add_tooltip(checkbutton, tooltip)
             self.export_checkbuttons.append(checkbutton)
 
@@ -2226,6 +2231,7 @@ class MultiROIGUI:
         self.viewer_content_frame.grid(row=2, column=0, sticky="ew")
         self.viewer_content_frame.columnconfigure(0, weight=1)
         # 高度由 row weight + Figure 尺寸共同控制（已在 workspace 和 analysis_frame 权重中处理）
+        self.viewer_frame.grid_remove()
 
         # Move notice down one row
         notice_frame = ttk.Frame(self.analysis_frame, style="Card.TFrame")
@@ -2236,15 +2242,15 @@ class MultiROIGUI:
             text=f"Developed by {APP_DEVELOPER} | DOI: {APP_DOI}",
             foreground="#555555",
             justify=tk.LEFT,
-            wraplength=340,
-        ).grid(row=0, column=0, sticky="w")
+            wraplength=320,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
         self.usage_notice_button = ttk.Button(
             notice_frame,
-            text="About / Citation / Usage Notice",
+            text="About / Citation",
             command=self.show_usage_notice,
             style="Compact.TButton",
         )
-        self.usage_notice_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self.usage_notice_button.grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.add_tooltip(
             self.usage_notice_button,
             "查看开发者署名、推荐引用格式、DOI 和授权使用说明；写论文、报告或共享结果前建议确认引用信息。",
@@ -2258,7 +2264,7 @@ class MultiROIGUI:
             style="Compact.TButton",
             width=8,
         )
-        self.dark_mode_btn.grid(row=0, column=2, sticky="e", padx=(8, 0))
+        self.dark_mode_btn.grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(4, 0))
         self.add_tooltip(self.dark_mode_btn, "切换暗色/浅色界面（实验室长时间使用更护眼）。")
 
     def sync_strain_mode_from_display(self, event=None):
@@ -2438,11 +2444,16 @@ class MultiROIGUI:
         self.first_img8 = normalize_to_uint8(self.first_raw)
         self.current_fullres_img8 = self.first_img8.copy()
 
-        # 初始使用较大上限加载
-        self.display_img, self.display_scale = get_display_image(self.first_img8, max_w=1280, max_h=820)
-        self.zoom_factor = self.display_scale
+        self.display_img = None
+        self.display_scale = 1.0
+        self.zoom_factor = 1.0
         self.auto_fit_enabled = True
-        self.show_image()
+        self.root.update_idletasks()
+        self._rescale_display_to_current_size()
+        if self.display_img is None:
+            self.display_img, self.display_scale = get_display_image(self.first_img8, max_w=1280, max_h=820)
+            self.zoom_factor = self.display_scale
+            self.show_image()
         self._update_zoom_label()
         self._update_image_toolbar_state()
 
@@ -2598,7 +2609,7 @@ class MultiROIGUI:
         new_disp, new_scale = get_display_image(self.current_fullres_img8, max_w=target_w, max_h=target_h)
 
         old_h, old_w = (self.display_img.shape[:2] if self.display_img is not None else (0, 0))
-        if new_disp.shape[0] > old_h * 0.92 or new_disp.shape[1] > old_w * 0.92:
+        if self.display_img is None or abs(new_disp.shape[0] - old_h) > 2 or abs(new_disp.shape[1] - old_w) > 2:
             self.display_img = new_disp
             self.display_scale = new_scale
             self.zoom_factor = new_scale   # 同步 zoom_factor
@@ -2719,8 +2730,10 @@ class MultiROIGUI:
 
         self.auto_fit_enabled = False
 
-        # 计算鼠标在当前显示图上的位置
-        cx, cy = event.x, event.y
+        # 计算鼠标在当前显示图上的位置。canvasx/canvasy 会考虑当前滚动偏移。
+        view_x, view_y = event.x, event.y
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
 
         # 当前显示尺寸
         if self.display_img is None:
@@ -2759,8 +2772,8 @@ class MultiROIGUI:
 
         # 将画布滚动到使 (new_cx, new_cy) 接近原鼠标位置
         try:
-            self.canvas.xview_moveto(max(0, (new_cx - cx) / new_disp_w))
-            self.canvas.yview_moveto(max(0, (new_cy - cy) / new_disp_h))
+            self.canvas.xview_moveto(max(0, min(1, (new_cx - view_x) / new_disp_w)))
+            self.canvas.yview_moveto(max(0, min(1, (new_cy - view_y) / new_disp_h)))
         except Exception:
             pass
 
@@ -2779,7 +2792,7 @@ class MultiROIGUI:
         if self.first_img8 is None:
             return
 
-        self.drag_start = (event.x, event.y)
+        self.drag_start = (self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))
         if self.temp_rect_id is not None:
             self.canvas.delete(self.temp_rect_id)
             self.temp_rect_id = None
@@ -2789,7 +2802,8 @@ class MultiROIGUI:
             return
 
         x0, y0 = self.drag_start
-        x1, y1 = event.x, event.y
+        x1 = self.canvas.canvasx(event.x)
+        y1 = self.canvas.canvasy(event.y)
 
         if self.temp_rect_id is not None:
             self.canvas.delete(self.temp_rect_id)
@@ -2802,7 +2816,8 @@ class MultiROIGUI:
             return
 
         x0, y0 = self.drag_start
-        x1, y1 = event.x, event.y
+        x1 = self.canvas.canvasx(event.x)
+        y1 = self.canvas.canvasy(event.y)
         self.drag_start = None
 
         if self.temp_rect_id is not None:
@@ -3974,6 +3989,7 @@ class MultiROIGUI:
 
         # Destroy previous canvas if any
         self.clear_viewer(keep_placeholder=False)
+        self.viewer_frame.grid()
 
         self.results_df = df.copy()
         self.results_groups = groups
@@ -4269,6 +4285,7 @@ class MultiROIGUI:
         # 恢复占位提示
         if keep_placeholder:
             try:
+                self.viewer_frame.grid()
                 self.viewer_placeholder.grid()
             except Exception:
                 pass

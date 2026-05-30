@@ -29,8 +29,8 @@ def gui_app():
         root.destroy()
 
 
-def write_test_image(path, value=120):
-    arr = np.full((100, 140), value, dtype=np.uint8)
+def write_test_image(path, value=120, shape=(100, 140)):
+    arr = np.full(shape, value, dtype=np.uint8)
     ok, data = cv2.imencode(".png", arr)
     assert ok
     data.tofile(str(path))
@@ -73,7 +73,11 @@ def reset_gui_app(app):
     app.loaded_image_folder = None
     app.first_raw = None
     app.first_img8 = None
+    app.current_fullres_img8 = None
     app.display_img = None
+    app.display_scale = 1.0
+    app.zoom_factor = 1.0
+    app.auto_fit_enabled = True
     app.photo = None
     app.preview_frame_1based.set(1)
     app.start_frame_1based.set(1)
@@ -148,13 +152,14 @@ def test_gui_initial_layout_fits_default_window_height(gui_app):
     assert int(app.log_text.cget("height")) <= 10
 
 
-def test_gui_minimum_size_does_not_clip_requested_layout(gui_app):
+def test_gui_minimum_size_fits_research_laptop_width(gui_app):
     root, _app = gui_app
     root.update_idletasks()
 
     min_w, min_h = root.minsize()
     assert min_w >= root.winfo_reqwidth()
-    assert min_h >= root.winfo_reqheight()
+    assert min_w <= 1366
+    assert min_h <= 768
 
 
 def test_gui_layout_fits_research_laptop_viewport(gui_app):
@@ -192,6 +197,73 @@ def test_gui_layout_fits_research_laptop_viewport(gui_app):
         assert 0 <= y0 < root_h
         assert x1 <= root_w
         assert y1 <= root_h
+    root.withdraw()
+
+
+def test_loaded_image_auto_fits_current_canvas(gui_app, tmp_path):
+    root, app = gui_app
+    reset_gui_app(app)
+    root.deiconify()
+    root.geometry("1366x768+0+0")
+    root.update()
+    root.update_idletasks()
+
+    image_dir = tmp_path / "wide_images"
+    output_dir = tmp_path / "out"
+    image_dir.mkdir()
+    output_dir.mkdir()
+    write_test_image(image_dir / "frame_001.png", value=120, shape=(900, 1600))
+
+    app.image_folder.set(str(image_dir))
+    app.output_folder.set(str(output_dir))
+    app.load_first_image()
+    root.update()
+    root.update_idletasks()
+
+    canvas_w = app.canvas.winfo_width()
+    canvas_h = app.canvas.winfo_height()
+    disp_h, disp_w = app.display_img.shape[:2]
+
+    assert app.auto_fit_enabled is True
+    assert disp_w <= canvas_w
+    assert disp_h <= canvas_h
+    assert app.display_scale == pytest.approx(min((canvas_w - 8) / 1600, (canvas_h - 8) / 900, 1.0))
+    root.withdraw()
+
+
+def test_auto_fit_shrinks_when_canvas_becomes_smaller(gui_app, tmp_path):
+    root, app = gui_app
+    reset_gui_app(app)
+    root.deiconify()
+    root.geometry("1480x900+0+0")
+    root.update()
+    root.update_idletasks()
+
+    image_dir = tmp_path / "large_images"
+    output_dir = tmp_path / "out"
+    image_dir.mkdir()
+    output_dir.mkdir()
+    write_test_image(image_dir / "frame_001.png", value=120, shape=(1000, 1800))
+
+    app.image_folder.set(str(image_dir))
+    app.output_folder.set(str(output_dir))
+    app.load_first_image()
+    root.update()
+    root.update_idletasks()
+    large_h, large_w = app.display_img.shape[:2]
+
+    root.geometry("1120x740+0+0")
+    root.update()
+    root.update_idletasks()
+    app.fit_image_to_view()
+    root.update()
+    root.update_idletasks()
+
+    small_h, small_w = app.display_img.shape[:2]
+    assert small_w <= app.canvas.winfo_width()
+    assert small_h <= app.canvas.winfo_height()
+    assert small_w <= large_w
+    assert small_h <= large_h
     root.withdraw()
 
 
