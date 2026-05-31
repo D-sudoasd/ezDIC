@@ -2,9 +2,11 @@ from pathlib import Path
 import os
 import subprocess
 import time
+import tkinter.font as tkfont
 
 import cv2
 import numpy as np
+import pandas as pd
 import pytest
 
 import dic_virtual_extensometer_gui_v7_multi_roi_range as ezdic
@@ -110,6 +112,57 @@ def add_basic_roi_group(app):
     app.strain_mode.set("x")
     app.sync_strain_mode_display()
     app.add_current_group()
+
+
+def actual_font_size(root, font_spec):
+    return abs(tkfont.Font(root=root, font=font_spec).actual("size"))
+
+
+def test_gui_preserves_platform_dpi_scaling(gui_app):
+    root, app = gui_app
+    app_scaling = float(root.tk.call("tk", "scaling"))
+
+    assert app.ui_scaling > 1.05
+    assert app_scaling > 1.05
+    assert root.winfo_fpixels("1i") > 76
+
+
+def test_gui_uses_readable_base_fonts(gui_app):
+    root, app = gui_app
+    root.update_idletasks()
+
+    assert actual_font_size(root, app.style.lookup("TLabel", "font")) >= 11
+    assert actual_font_size(root, app.style.lookup("TButton", "font")) >= 11
+    assert actual_font_size(root, app.style.lookup("TLabelframe.Label", "font")) >= 12
+    assert int(app.style.lookup("Treeview", "rowheight")) >= 30
+    assert actual_font_size(root, app.log_text.cget("font")) >= 10
+
+
+def test_viewer_plot_uses_readable_legend_font(gui_app):
+    root, app = gui_app
+    df = pd.DataFrame(
+        {
+            "group": ["G01", "G01"],
+            "frame_global_1based": [1, 2],
+            "engineering_strain": [0.0, 0.012],
+        }
+    )
+    groups = [{"name": "G01", "role": "none"}]
+
+    try:
+        app.show_results_viewer(df, groups)
+        root.update_idletasks()
+
+        ax = app.viewer_figure.axes[0]
+        legend = ax.get_legend()
+
+        assert legend is not None
+        assert legend.get_texts()[0].get_fontsize() >= 9
+        assert ax.xaxis.label.get_size() >= 10
+        assert ax.yaxis.label.get_size() >= 10
+    finally:
+        app.clear_viewer(keep_placeholder=False)
+        app.viewer_frame.grid_remove()
 
 
 def test_app_metadata_and_usage_notice_are_explicit():
@@ -493,8 +546,8 @@ def test_gui_includes_optional_origin_and_publication_exports_disabled_by_defaul
     assert app.export_origin_opju.get() is False
     assert app.export_publication_figures.get() is False
     export_texts = [button.cget("text") for button in app.export_checkbuttons]
-    assert "Origin OPJU 项目（直接导入 OriginPro）" in export_texts
-    assert "论文级图表包（PNG/TIFF/PDF/SVG/EPS）" in export_texts
+    assert "Origin OPJU" in export_texts
+    assert "论文图包" in export_texts
 
 
 def test_loading_new_image_folder_clears_previous_roi_state(gui_app, tmp_path, monkeypatch):

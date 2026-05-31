@@ -169,7 +169,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, font as tkfont
 
 from PIL import Image, ImageTk
 
@@ -1406,6 +1406,42 @@ def write_qc_summary(summary, path):
 # GUI 主类
 # ==========================
 
+UI_FONT_FAMILY = "Microsoft YaHei UI"
+UI_BASE_FONT_SIZE = 11
+UI_TITLE_FONT_SIZE = 12
+UI_PRIMARY_FONT_SIZE = 11
+UI_STEP_FONT_SIZE = 11
+UI_LOG_FONT_SIZE = 10
+UI_TREE_ROWHEIGHT = 32
+UI_VIEWER_TICK_FONT_SIZE = 9
+UI_VIEWER_LEGEND_FONT_SIZE = 9
+UI_VIEWER_LABEL_FONT_SIZE = 10
+UI_VIEWER_TITLE_FONT_SIZE = 11
+UI_MIN_TK_SCALING = 1.20
+UI_MAX_TK_SCALING = 2.50
+UI_SCALE_ENV_VAR = "EZDIC_UI_SCALE"
+
+
+def enable_windows_dpi_awareness():
+    """Make the Windows process DPI aware before Tk creates the first window."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            return
+        except Exception:
+            pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 class MultiROIGUI:
     def __init__(self, root):
         self.root = root
@@ -1525,23 +1561,56 @@ class MultiROIGUI:
     # ---------- UI ----------
 
     def configure_initial_window(self):
-        # 高 DPI / 缩放感知（Windows 实验室笔记本常见 125%-200% 缩放）
-        try:
-            self.root.tk.call("tk", "scaling", 1.0)  # 先重置，避免 Tk 内部缩放导致控件重叠
-        except Exception:
-            pass
+        self.ui_scaling = self.configure_tk_scaling()
+        self.configure_ui_metrics()
 
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        width = min(1480, max(1180, screen_w - 120))
-        height = min(920, max(740, screen_h - 120))
+        width = min(1500, max(1240, screen_w - 100))
+        height = min(940, max(760, screen_h - 80))
         self.root.geometry(f"{width}x{height}")
-        self.root.minsize(1140, 720)
+        self.root.minsize(1120, 740)
+
+    def configure_tk_scaling(self):
+        try:
+            platform_scaling = float(self.root.tk.call("tk", "scaling"))
+        except Exception:
+            platform_scaling = 1.0
+
+        env_value = os.environ.get(UI_SCALE_ENV_VAR)
+        if env_value:
+            try:
+                target_scaling = float(env_value)
+            except ValueError:
+                target_scaling = platform_scaling
+        else:
+            target_scaling = max(platform_scaling, UI_MIN_TK_SCALING)
+
+        target_scaling = min(max(target_scaling, 1.0), UI_MAX_TK_SCALING)
+        try:
+            self.root.tk.call("tk", "scaling", target_scaling)
+            return float(self.root.tk.call("tk", "scaling"))
+        except Exception:
+            return platform_scaling
+
+    def configure_ui_metrics(self):
+        self.ui_base_font = (UI_FONT_FAMILY, UI_BASE_FONT_SIZE)
+        self.ui_title_font = (UI_FONT_FAMILY, UI_TITLE_FONT_SIZE, "bold")
+        self.ui_primary_font = (UI_FONT_FAMILY, UI_PRIMARY_FONT_SIZE, "bold")
+        self.ui_step_font = (UI_FONT_FAMILY, UI_STEP_FONT_SIZE, "bold")
+        self.ui_log_font = (UI_FONT_FAMILY, UI_LOG_FONT_SIZE)
+        self.canvas_group_font = (UI_FONT_FAMILY, UI_BASE_FONT_SIZE, "bold")
+        self.canvas_current_roi_font = (UI_FONT_FAMILY, UI_TITLE_FONT_SIZE, "bold")
+        self.viewer_tick_font_size = UI_VIEWER_TICK_FONT_SIZE
+        self.viewer_legend_font_size = UI_VIEWER_LEGEND_FONT_SIZE
+        self.viewer_label_font_size = UI_VIEWER_LABEL_FONT_SIZE
+        self.viewer_title_font_size = UI_VIEWER_TITLE_FONT_SIZE
 
     def configure_final_window_limits(self):
         self.root.update_idletasks()
         # 给一个更宽松的最小尺寸，避免在普通科研笔记本上启动就感觉拥挤
-        self.root.minsize(1120, 740)
+        min_width = min(1366, max(1180, self.root.winfo_reqwidth()))
+        self.root.minsize(min_width, 740)
 
     def add_tooltip(self, widget, text):
         self.tooltips.append(ToolTip(widget, text))
@@ -1569,10 +1638,16 @@ class MultiROIGUI:
 
         self._apply_color_palette()
 
-        base_font = ("Microsoft YaHei UI", 9)
-        title_font = ("Microsoft YaHei UI", 10, "bold")
-        primary_font = ("Microsoft YaHei UI", 10, "bold")
-        step_font = ("Microsoft YaHei UI", 9, "bold")
+        base_font = self.ui_base_font
+        title_font = self.ui_title_font
+        primary_font = self.ui_primary_font
+        step_font = self.ui_step_font
+
+        for font_name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+            try:
+                tkfont.nametofont(font_name).configure(family=UI_FONT_FAMILY, size=UI_BASE_FONT_SIZE)
+            except tk.TclError:
+                pass
 
         self.root.configure(background=self.ui_bg)
         self.root.option_add("*Font", base_font)
@@ -1580,18 +1655,18 @@ class MultiROIGUI:
         self.style.configure("App.TFrame", background=self.ui_bg)
         self.style.configure("Panel.TFrame", background=self.panel_bg)
         self.style.configure("Card.TFrame", background=self.card_bg)
-        self.style.configure("TLabel", background=self.card_bg, foreground=self.text_color)
-        self.style.configure("Hint.TLabel", background=self.card_bg, foreground=self.muted_color)
+        self.style.configure("TLabel", background=self.card_bg, font=base_font, foreground=self.text_color)
+        self.style.configure("Hint.TLabel", background=self.card_bg, font=base_font, foreground=self.muted_color)
         self.style.configure("Key.TLabel", background=self.card_bg, font=step_font, foreground=self.key_color)
         self.style.configure("Warning.TLabel", background=self.card_bg, font=step_font, foreground=self.warning_color)
         self.style.configure("StepTitle.TLabel", background=self.card_bg, font=step_font, foreground=self.text_color)
         self.style.configure("TLabelframe", background=self.card_bg, bordercolor=self.border_color, relief="solid")
         self.style.configure("TLabelframe.Label", background=self.ui_bg, foreground=self.text_color, font=title_font)
-        self.style.configure("TButton", padding=(10, 5))
-        self.style.configure("Compact.TButton", padding=(8, 4))
+        self.style.configure("TButton", font=base_font, padding=(10, 6))
+        self.style.configure("Compact.TButton", font=base_font, padding=(8, 5))
         self.style.configure("Primary.TButton", font=primary_font, padding=(14, 8), foreground="#ffffff", background=self.primary_color)
-        self.style.configure("Secondary.TButton", padding=(9, 5), foreground=self.primary_color, background=self.card_bg)
-        self.style.configure("Danger.TButton", padding=(8, 4), foreground=self.warning_color, background=self.card_bg)
+        self.style.configure("Secondary.TButton", font=base_font, padding=(9, 5), foreground=self.primary_color, background=self.card_bg)
+        self.style.configure("Danger.TButton", font=base_font, padding=(8, 5), foreground=self.warning_color, background=self.card_bg)
         self.style.map(
             "Primary.TButton",
             foreground=[("disabled", "#d9d9d9"), ("active", "#ffffff")],
@@ -1602,10 +1677,10 @@ class MultiROIGUI:
             foreground=[("disabled", self.muted_color), ("active", "#ffffff")],
             background=[("active", self.warning_color), ("pressed", self.warning_color)],
         )
-        self.style.configure("TEntry", padding=(4, 3))
-        self.style.configure("TCombobox", padding=(4, 3))
-        self.style.configure("Treeview", rowheight=24, background=self.card_bg, fieldbackground=self.card_bg)
-        self.style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"))
+        self.style.configure("TEntry", font=base_font, padding=(4, 4))
+        self.style.configure("TCombobox", font=base_font, padding=(4, 4))
+        self.style.configure("Treeview", font=base_font, rowheight=UI_TREE_ROWHEIGHT, background=self.card_bg, fieldbackground=self.card_bg)
+        self.style.configure("Treeview.Heading", font=step_font)
 
     def _apply_color_palette(self):
         """集中管理浅色/暗色配色，便于后续完整暗色模式切换。"""
@@ -2169,7 +2244,7 @@ class MultiROIGUI:
         tree_frame.columnconfigure(0, weight=1)
         columns = ("name", "role", "selected", "actual", "L0", "dx", "dy", "roi1", "roi2")
         # 保留水平滚动，首屏优先显示按钮和图像，不让列表请求宽度撑爆窗口。
-        self.group_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=4)
+        self.group_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=3)
         for col, width in [
             ("name", 56), ("role", 56), ("selected", 48), ("actual", 48), ("L0", 56),
             ("dx", 48), ("dy", 48), ("roi1", 90), ("roi2", 90)
@@ -2288,6 +2363,7 @@ class MultiROIGUI:
             wraplength=340,
         )
         self.export_hint_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self.export_hint_label.configure(text="确认参考帧、ROI 方向和导出内容后再开始。", wraplength=500)
         self.add_tooltip(
             self.export_hint_label,
             "这是开始分析前的重点检查区。若不确定方向或 ROI 质量，先导出 QC 摘要、相关系数曲线或 overlay 图片进行复核。",
@@ -2297,6 +2373,7 @@ class MultiROIGUI:
         export_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         export_frame.columnconfigure(0, weight=1)
         export_frame.columnconfigure(1, weight=1)
+        export_frame.columnconfigure(2, weight=1)
 
         # 快速预设按钮（科研常用组合）—— 使用 grid 以避免与下方 checkbutton 冲突
         preset_bar = ttk.Frame(export_frame, style="Card.TFrame")
@@ -2361,6 +2438,21 @@ class MultiROIGUI:
             ("参数与接受统计", self.export_parameters, "勾选后记录当前阈值、搜索半径、接受模式和导出设置，便于论文、报告或重复实验时追溯。"),
         ]
         self.export_checkbuttons = []
+        compact_export_labels = [
+            "Origin TXT",
+            "Origin OPJU",
+            "应变 PNG",
+            "论文图包",
+            "QC 摘要",
+            "完整 CSV",
+            "相关 PNG",
+            "Overlay 图",
+            "参数记录",
+        ]
+        export_options = [
+            (compact_export_labels[idx], variable, tooltip)
+            for idx, (_text, variable, tooltip) in enumerate(export_options)
+        ]
         for idx, (text, variable, tooltip) in enumerate(export_options):
             checkbutton = tk.Checkbutton(
                 export_frame,
@@ -2368,7 +2460,8 @@ class MultiROIGUI:
                 variable=variable,
                 anchor="w",
                 justify=tk.LEFT,
-                wraplength=190,
+                wraplength=160,
+                font=self.ui_base_font,
                 bg=self.card_bg,
                 fg=self.text_color,
                 activebackground=self.card_bg,
@@ -2379,40 +2472,44 @@ class MultiROIGUI:
                 highlightthickness=0,
             )
             # 从 row=1 开始，双列排布减少首屏纵向占位。
-            checkbutton.grid(row=idx // 2 + 1, column=idx % 2, sticky="w", padx=4, pady=2)
+            checkbutton.grid(row=idx // 3 + 1, column=idx % 3, sticky="w", padx=3, pady=0)
             self.add_tooltip(checkbutton, tooltip)
             self.export_checkbuttons.append(checkbutton)
 
-        status_frame = ttk.LabelFrame(self.analysis_frame, text="运行状态", padding=(8, 6))
+        status_frame = ttk.LabelFrame(self.analysis_frame, text="运行状态", padding=(8, 4))
         status_frame.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         status_frame.columnconfigure(0, weight=1)
         self.progress = ttk.Progressbar(status_frame, orient=tk.HORIZONTAL, mode="determinate")
-        self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 3))
 
         self.status_var = tk.StringVar(value="未加载图像")
-        ttk.Label(status_frame, textvariable=self.status_var, style="Hint.TLabel", wraplength=340).grid(row=1, column=0, sticky="w")
 
         # 预览缩放信息（动态重采样时更新，让用户知道当前看到的是什么分辨率）
         self.preview_scale_var = tk.StringVar(value="")
-        ttk.Label(status_frame, textvariable=self.preview_scale_var, style="Hint.TLabel", foreground="#64748b").grid(row=2, column=0, sticky="w", pady=(1, 0))
+        status_line = ttk.Frame(status_frame, style="Card.TFrame")
+        status_line.grid(row=1, column=0, sticky="ew", pady=(0, 2))
+        status_line.columnconfigure(0, weight=1)
+        ttk.Label(status_line, textvariable=self.status_var, style="Hint.TLabel", wraplength=260).grid(row=0, column=0, sticky="w")
+        ttk.Label(status_line, textvariable=self.preview_scale_var, style="Hint.TLabel", foreground="#64748b").grid(row=0, column=1, sticky="e")
 
         self.log_text = tk.Text(
-            self.analysis_frame,
+            status_frame,
             width=38,
-            height=4,   # 略微增加默认高度，配合 viewer 时信息更易读
+            height=1,
             wrap=tk.WORD,
             bg="#0f172a",
             fg="#e5e7eb",
             insertbackground="#e5e7eb",
+            font=self.ui_log_font,
             relief=tk.FLAT,
             padx=8,
             pady=6,
         )
-        self.log_text.grid(row=4, column=0, sticky="nsew")
+        self.log_text.grid(row=2, column=0, sticky="ew")
 
         # 给日志和预览器合理的垂直分配，避免互相遮挡
         # row 4 (log) 给较大权重，row 5 (viewer) 给固定合理高度，防止整体窗口被撑爆
-        self.analysis_frame.rowconfigure(4, weight=3)
+        self.analysis_frame.rowconfigure(4, weight=0)
         self.analysis_frame.rowconfigure(5, weight=0)   # viewer 由内容决定高度
 
         # === Tier 0: In-app results viewer (collapsible) ===
@@ -2468,22 +2565,24 @@ class MultiROIGUI:
 
         # Move notice down one row
         notice_frame = ttk.Frame(self.analysis_frame, style="Card.TFrame")
-        notice_frame.grid(row=6, column=0, sticky="ew", pady=(6, 0))
+        notice_frame.grid(row=6, column=0, sticky="ew", pady=(4, 0))
         notice_frame.columnconfigure(0, weight=1)
+        notice_frame.columnconfigure(1, weight=0)
+        notice_frame.columnconfigure(2, weight=0)
         ttk.Label(
             notice_frame,
-            text=f"Developed by {APP_DEVELOPER} | DOI: {APP_DOI}",
+            text=f"{APP_DEVELOPER} | DOI: {APP_DOI}",
             foreground="#555555",
             justify=tk.LEFT,
-            wraplength=320,
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
+            wraplength=460,
+        ).grid(row=0, column=0, sticky="w")
         self.usage_notice_button = ttk.Button(
             notice_frame,
             text="About / Citation",
             command=self.show_usage_notice,
             style="Compact.TButton",
         )
-        self.usage_notice_button.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.usage_notice_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
         self.add_tooltip(
             self.usage_notice_button,
             "查看开发者署名、推荐引用格式、DOI 和授权使用说明；写论文、报告或共享结果前建议确认引用信息。",
@@ -2497,7 +2596,7 @@ class MultiROIGUI:
             style="Compact.TButton",
             width=8,
         )
-        self.dark_mode_btn.grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(4, 0))
+        self.dark_mode_btn.grid(row=0, column=2, sticky="e", padx=(8, 0))
         self.add_tooltip(self.dark_mode_btn, "切换暗色/浅色界面（实验室长时间使用更护眼）。")
 
     def sync_strain_mode_from_display(self, event=None):
@@ -3163,7 +3262,7 @@ class MultiROIGUI:
                 text=group["name"],
                 anchor="nw",
                 fill="lime",
-                font=("Arial", 10, "bold"),
+                font=self.canvas_group_font,
             )
 
         def draw(rect, color, label):
@@ -3183,7 +3282,7 @@ class MultiROIGUI:
                 text=label,
                 anchor="nw",
                 fill=color,
-                font=("Arial", 12, "bold"),
+                font=self.canvas_current_roi_font,
             )
 
         draw(self.roi1, "red", "current ROI 1")
@@ -4441,7 +4540,15 @@ class MultiROIGUI:
                     label=gname,
                 )
             if not has_any:
-                ax.text(0.5, 0.5, "无可显示的有效应变数据", ha="center", va="center", transform=ax.transAxes, fontsize=9)
+                ax.text(
+                    0.5,
+                    0.5,
+                    "无可显示的有效应变数据",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                    fontsize=self.viewer_label_font_size,
+                )
             else:
                 ax.set_ylabel("工程应变 (Engineering strain)")
 
@@ -4449,7 +4556,7 @@ class MultiROIGUI:
 
         ax.set_xlabel("帧 (Frame)")
         ax.grid(True, alpha=0.3)
-        ax.legend(loc="best", fontsize=7)
+        ax.legend(loc="best", fontsize=self.viewer_legend_font_size)
 
         # 再次确保暗色模式下的文字颜色
         if getattr(self, "dark_mode", None) and self.dark_mode.get():
@@ -4458,6 +4565,7 @@ class MultiROIGUI:
             ax.xaxis.label.set_color("#e2e8f0")
             ax.title.set_color("#e2e8f0")
 
+        self._style_viewer_plot_fonts(ax)
         fig.tight_layout()
 
         self.viewer_figure = fig
@@ -4475,6 +4583,18 @@ class MultiROIGUI:
         # 应用高质量暗色样式（如果开启）
         self._style_viewer_axes_dark(ax)
 
+    def _style_viewer_plot_fonts(self, ax):
+        ax.tick_params(labelsize=self.viewer_tick_font_size)
+        ax.xaxis.label.set_size(self.viewer_label_font_size)
+        ax.yaxis.label.set_size(self.viewer_label_font_size)
+        ax.title.set_size(self.viewer_title_font_size)
+        for text in ax.texts:
+            text.set_fontsize(max(text.get_fontsize(), self.viewer_label_font_size))
+        legend = ax.get_legend()
+        if legend:
+            for text in legend.get_texts():
+                text.set_fontsize(self.viewer_legend_font_size)
+
     def _style_viewer_axes_dark(self, ax):
         """为内嵌结果预览图提供高质量的暗色主题支持。"""
         if not (hasattr(self, "dark_mode") and self.dark_mode.get()):
@@ -4486,7 +4606,7 @@ class MultiROIGUI:
             ax.set_facecolor("#1e2937")
 
             # 坐标轴和刻度
-            ax.tick_params(colors="#cbd5e1", labelsize=8)
+            ax.tick_params(colors="#cbd5e1", labelsize=self.viewer_tick_font_size)
             for spine in ax.spines.values():
                 spine.set_color("#64748b")
                 spine.set_linewidth(0.8)
@@ -4609,6 +4729,7 @@ class MultiROIGUI:
 
 
 def main():
+    enable_windows_dpi_awareness()
     root = tk.Tk()
     app = MultiROIGUI(root)
     app.run()
