@@ -23,14 +23,45 @@ if not exist "%ENTRY%" (
     exit /b 1
 )
 
+if defined EZDIC_LAUNCHER_SMOKE_TEST (
+    echo EZDIC launcher smoke test
+    echo Project: %CD%
+    echo Python: %VENV_PY%
+    echo Entry: %ENTRY%
+    popd
+    exit /b 0
+)
+
+if exist "%VENV_PY%" (
+    "%VENV_PY%" --version >nul 2>nul
+    if errorlevel 1 (
+        echo Existing local Python environment is not usable. Recreating .venv...
+        rmdir /s /q ".venv" >nul 2>nul
+        if exist "%VENV_PY%" (
+            echo [ERROR] Failed to remove the unusable .venv folder.
+            echo Close programs using %CD%\.venv and try again.
+            echo.
+            popd
+            pause
+            exit /b 1
+        )
+    )
+)
+
 if not exist "%VENV_PY%" (
     set "BASE_PYTHON="
     where py >nul 2>nul
-    if not errorlevel 1 set "BASE_PYTHON=py -3"
+    if not errorlevel 1 (
+        py -3 --version >nul 2>nul
+        if not errorlevel 1 set "BASE_PYTHON=py -3"
+    )
 
     if not defined BASE_PYTHON (
         where python >nul 2>nul
-        if not errorlevel 1 set "BASE_PYTHON=python"
+        if not errorlevel 1 (
+            python --version >nul 2>nul
+            if not errorlevel 1 set "BASE_PYTHON=python"
+        )
     )
 
     if not defined BASE_PYTHON (
@@ -46,6 +77,15 @@ if not exist "%VENV_PY%" (
     !BASE_PYTHON! -m venv .venv
     if errorlevel 1 (
         echo [ERROR] Failed to create .venv.
+        echo.
+        popd
+        pause
+        exit /b 1
+    )
+
+    "%VENV_PY%" --version >nul 2>nul
+    if errorlevel 1 (
+        echo [ERROR] Created .venv, but its Python executable is not usable.
         echo.
         popd
         pause
@@ -76,15 +116,6 @@ if exist "%REQ%" (
         )
         copy /y "%REQ%" "%REQ_MARKER%" >nul
     )
-)
-
-if defined EZDIC_LAUNCHER_SMOKE_TEST (
-    echo EZDIC launcher smoke test
-    echo Project: %CD%
-    echo Python: %PYTHON_CMD%
-    echo Entry: %ENTRY%
-    popd
-    exit /b 0
 )
 
 echo Starting ezDIC...

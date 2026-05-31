@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
+import shutil
 import subprocess
+import sys
 import time
 import tkinter.font as tkfont
 
@@ -538,6 +540,121 @@ def test_windows_launcher_bat_invokes_source_entry_in_smoke_mode():
     assert result.returncode == 0, output
     assert "EZDIC launcher smoke test" in output
     assert "dic_virtual_extensometer_gui_v7_multi_roi_range.py" in output
+
+
+def test_windows_launcher_recreates_stale_venv_before_running_entry(tmp_path):
+    if os.name != "nt":
+        pytest.skip("Windows launcher stale-venv test requires cmd.exe")
+
+    project = tmp_path / "launcher_project"
+    project.mkdir()
+    shutil.copy2(ROOT / "start_ezDIC.bat", project / "start_ezDIC.bat")
+    (project / "dic_virtual_extensometer_gui_v7_multi_roi_range.py").write_text(
+        "print('entry-ran')\n",
+        encoding="utf-8",
+    )
+
+    stale_python = project / ".venv" / "Scripts" / "python.exe"
+    stale_python.parent.mkdir(parents=True)
+    stale_python.write_text("not a usable python executable\n", encoding="utf-8")
+
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", str(project / "start_ezDIC.bat")],
+        cwd=project,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "entry-ran" in output
+
+
+def test_build_release_smoke_recreates_stale_build_venv(tmp_path):
+    if os.name != "nt":
+        pytest.skip("PowerShell build smoke test requires Windows")
+
+    project = tmp_path / "build_project"
+    project.mkdir()
+    shutil.copy2(ROOT / "build_release.ps1", project / "build_release.ps1")
+
+    stale_python = project / ".venv-build" / "Scripts" / "python.exe"
+    stale_python.parent.mkdir(parents=True)
+    stale_python.write_text("not a usable python executable\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project / "build_release.ps1"),
+            "-SmokeTest",
+        ],
+        cwd=project,
+        text=True,
+        capture_output=True,
+        timeout=90,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "ezDIC build smoke test" in output
+
+
+def test_build_release_smoke_accepts_usable_venv_after_nonzero_create(tmp_path):
+    if os.name != "nt":
+        pytest.skip("PowerShell build smoke test requires Windows")
+
+    project = tmp_path / "build_project"
+    project.mkdir()
+    shutil.copy2(ROOT / "build_release.ps1", project / "build_release.ps1")
+
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    (fake_bin / "py.cmd").write_text("@echo off\r\nexit /b 1\r\n", encoding="utf-8")
+    (fake_bin / "python.cmd").write_text(
+        "\r\n".join(
+            [
+                "@echo off",
+                "if \"%1\"==\"--version\" (",
+                "  echo Python 3.11.99",
+                "  exit /b 0",
+                ")",
+                f"\"{sys.executable}\" %*",
+                "if \"%1\"==\"-m\" if \"%2\"==\"venv\" exit /b 1",
+                "exit /b %ERRORLEVEL%",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project / "build_release.ps1"),
+            "-SmokeTest",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=90,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "ezDIC build smoke test" in output
 
 
 def test_gui_includes_optional_origin_and_publication_exports_disabled_by_default(gui_app):
