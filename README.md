@@ -47,6 +47,8 @@ core/
   poisson_ratio.png        # when axial/transverse ROI roles are set
 qc/
   qc_summary.txt
+optional/
+  publication_figures/     # optional PNG/TIFF/PDF/SVG/EPS publication-style figures
 ```
 
 The primary TXT format is intentionally simple:
@@ -58,7 +60,7 @@ Frame	EngineeringStrain	TrueStrain
 3	0.00000580	0.00000580
 ```
 
-Optional exports include an Origin OPJU project, full CSV tables, correlation plots, tracking overlays, and parameter summaries. The OPJU export requires Windows, OriginPro 2021+, a valid local OriginPro license, and the `originpro` Python package. It writes worksheet data only; publication figures still come from the existing PNG exports or from manual plotting in OriginPro.
+Optional exports include an Origin OPJU project, full CSV tables, correlation plots, tracking overlays, parameter summaries, and a **Publication-style figure package**. The publication package writes high-resolution PNG/TIFF files and vector PDF/SVG/EPS files under `optional/publication_figures/` using the unified ezDIC plotting style. The OPJU export requires Windows, OriginPro 2021+, a valid local OriginPro license, and the `originpro` Python package; if OPJU export fails, ezDIC keeps the TXT/PNG/CSV/publication figure outputs and reports only the OPJU-specific failure.
 
 For repeated virtual extensometers, `strain_mean_groups.txt` averages groups with the same `role` and `actual_mode` frame by frame. Rejected frames and `NaN` strain values are excluded from the mean. The mean table includes:
 

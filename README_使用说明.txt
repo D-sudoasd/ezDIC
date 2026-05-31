@@ -48,6 +48,15 @@ By default, ezDIC exports:
 
 Optional outputs such as an Origin OPJU project, full CSV files, correlation plots, overlays, and parameter summaries are disabled by default and can be enabled in the export options.
 
+Publication Figure Package
+--------------------------
+The optional publication-style figure package exports PNG/TIFF/PDF/SVG/EPS files: high-resolution PNG/TIFF bitmaps and PDF/SVG/EPS vector figures.
+
+Output folder:
+- optional/publication_figures
+
+Use this package when you need manuscript or figure-layout drafts with consistent fonts, line widths, markers, legend sizing, and tight bounding boxes. These figures do not replace the core TXT/CSV data exports; they are an additional plotting output for papers, reports, and presentations.
+
 Mean Strain Export / 平均应变导出
 --------------------------------
 勾选 Origin TXT（三列核心数据）后，平均应变会随核心结果一起导出，不需要单独勾选其他选项。
