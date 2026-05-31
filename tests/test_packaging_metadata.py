@@ -67,6 +67,8 @@ def reset_gui_app(app):
     app.export_corr_plot.set(False)
     app.export_overlays.set(False)
     app.export_parameters.set(False)
+    if hasattr(app, "export_publication_figures"):
+        app.export_publication_figures.set(False)
     if hasattr(app, "export_origin_opju"):
         app.export_origin_opju.set(False)
     app.image_paths = []
@@ -197,6 +199,40 @@ def test_gui_layout_fits_research_laptop_viewport(gui_app):
         assert 0 <= y0 < root_h
         assert x1 <= root_w
         assert y1 <= root_h
+    root.withdraw()
+
+
+def test_export_preset_buttons_fit_research_laptop_viewport(gui_app):
+    root, app = gui_app
+    root.deiconify()
+    root.geometry("1366x768+0+0")
+    root.update()
+    root.update_idletasks()
+
+    assert app.export_preset_label.cget("text") == "导出预设："
+
+    root_w = root.winfo_width()
+    root_h = root.winfo_height()
+    root_x = root.winfo_rootx()
+    root_y = root.winfo_rooty()
+
+    for widget in [
+        app.export_preset_label,
+        app.export_research_preset_button,
+        app.export_quick_preset_button,
+        app.export_all_preset_button,
+    ]:
+        assert widget.winfo_width() > 20
+        assert widget.winfo_height() > 10
+        x0 = widget.winfo_rootx() - root_x
+        y0 = widget.winfo_rooty() - root_y
+        x1 = x0 + widget.winfo_width()
+        y1 = y0 + widget.winfo_height()
+        assert 0 <= x0 < root_w
+        assert 0 <= y0 < root_h
+        assert x1 <= root_w
+        assert y1 <= root_h
+
     root.withdraw()
 
 
@@ -334,6 +370,8 @@ def test_gui_primary_interactive_controls_have_scientific_tooltips(gui_app):
         "group_tree",
         "canvas",
         "start_button",
+        "viewer_export_btn",
+        "viewer_clear_btn",
         "usage_notice_button",
     ]
 
@@ -359,6 +397,65 @@ def test_gui_key_settings_use_light_visual_emphasis(gui_app):
     assert app.strain_mode_label.cget("style") == "Key.TLabel"
     assert app.export_hint_label.cget("style") == "Warning.TLabel"
     assert app.start_button.cget("style") == "Primary.TButton"
+    assert app.select_image_button.cget("style") == "Secondary.TButton"
+    assert app.select_output_button.cget("style") == "Secondary.TButton"
+    assert app.load_images_button.cget("style") == "Secondary.TButton"
+    assert app.delete_group_button.cget("style") == "Danger.TButton"
+    assert app.clear_rois_button.cget("style") == "Danger.TButton"
+
+
+def test_gui_uses_clear_action_button_labels(gui_app):
+    _root, app = gui_app
+
+    expected_text = {
+        "select_image_button": "选图像文件夹",
+        "select_output_button": "选输出文件夹",
+        "load_images_button": "加载/刷新序列",
+        "show_preview_button": "显示预览帧",
+        "set_start_button": "设为起始/参考",
+        "set_end_button": "设为结束帧",
+        "start_button": "开始分析并导出结果",
+        "delete_group_button": "删除选中组",
+        "clear_rois_button": "清除当前 ROI",
+        "viewer_export_btn": "导出预览图",
+        "viewer_clear_btn": "清除预览图",
+    }
+    for attr, text in expected_text.items():
+        assert getattr(app, attr).cget("text") == text
+
+
+def test_export_preset_buttons_are_named_and_explained(gui_app):
+    _root, app = gui_app
+
+    expected = {
+        "export_research_preset_button": ("推荐导出", "核心"),
+        "export_quick_preset_button": ("快速查看导出", "快速检查"),
+        "export_all_preset_button": ("全量复核导出", "文件数量"),
+    }
+    for attr, (text, tooltip_keyword) in expected.items():
+        button = getattr(app, attr, None)
+        assert button is not None, f"{attr} should be stored for export preset help verification"
+        assert button.cget("text") == text
+        tooltip = getattr(button, "_tooltip_text", "")
+        assert tooltip_keyword in tooltip
+        assert len(tooltip.strip()) >= 24
+
+
+def test_start_analysis_button_reflects_workflow_readiness(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+
+    assert str(app.start_button.cget("state")) == "disabled"
+    assert "加载" in app.workflow_hint_var.get()
+
+    load_two_frame_sequence(app, tmp_path / "images_for_state", tmp_path / "out_for_state")
+    assert str(app.start_button.cget("state")) == "disabled"
+    assert "ROI" in app.workflow_hint_var.get()
+
+    add_basic_roi_group(app)
+    assert str(app.start_button.cget("state")) == "normal"
+    assert "开始分析" in app.workflow_hint_var.get()
 
 
 def test_windows_launcher_bat_invokes_source_entry_in_smoke_mode():
@@ -390,12 +487,14 @@ def test_windows_launcher_bat_invokes_source_entry_in_smoke_mode():
     assert "dic_virtual_extensometer_gui_v7_multi_roi_range.py" in output
 
 
-def test_gui_includes_origin_opju_export_option_disabled_by_default(gui_app):
+def test_gui_includes_optional_origin_and_publication_exports_disabled_by_default(gui_app):
     _root, app = gui_app
 
     assert app.export_origin_opju.get() is False
+    assert app.export_publication_figures.get() is False
     export_texts = [button.cget("text") for button in app.export_checkbuttons]
     assert "Origin OPJU 项目（直接导入 OriginPro）" in export_texts
+    assert "论文级图表包（PNG/TIFF/PDF/SVG/EPS）" in export_texts
 
 
 def test_loading_new_image_folder_clears_previous_roi_state(gui_app, tmp_path, monkeypatch):
@@ -424,6 +523,8 @@ def test_failed_image_load_preserves_previous_valid_sequence(gui_app, tmp_path, 
     load_two_frame_sequence(app, tmp_path / "images_good", tmp_path / "out_good")
     old_paths = list(app.image_paths)
     old_preview = app.current_preview_index
+    log_messages = []
+    monkeypatch.setattr(app, "log", lambda message: log_messages.append(message))
     corrupt_dir = tmp_path / "images_bad"
     corrupt_dir.mkdir()
     (corrupt_dir / "bad.png").write_bytes(b"not an image")
@@ -435,6 +536,33 @@ def test_failed_image_load_preserves_previous_valid_sequence(gui_app, tmp_path, 
     assert app.image_paths == old_paths
     assert app.current_preview_index == old_preview
     assert app.first_img8 is not None
+    assert any("加载图像序列失败" in message for message in log_messages)
+    assert not any("Traceback" in message for message in log_messages)
+
+
+def test_clear_current_rois_requires_confirmation(gui_app, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    app.roi1 = (10, 10, 30, 30)
+    app.roi2 = (80, 10, 30, 30)
+
+    answers = iter([False, True])
+    prompts = []
+    monkeypatch.setattr(
+        ezdic.messagebox,
+        "askyesno",
+        lambda title, message: prompts.append((title, message)) or next(answers),
+    )
+
+    app.clear_current_rois()
+    assert app.roi1 == (10, 10, 30, 30)
+    assert app.roi2 == (80, 10, 30, 30)
+
+    app.clear_current_rois()
+    assert app.roi1 is None
+    assert app.roi2 is None
+    assert prompts
+    assert prompts[0][0] == "清除当前 ROI"
 
 
 def test_validate_rejects_output_path_that_is_existing_file(gui_app, tmp_path, monkeypatch):
@@ -464,11 +592,12 @@ def test_validate_requires_at_least_one_export_option(gui_app, tmp_path, monkeyp
     app.export_corr_plot.set(False)
     app.export_overlays.set(False)
     app.export_parameters.set(False)
+    app.export_publication_figures.set(False)
     app.export_origin_opju.set(False)
 
     with pytest.raises(RuntimeError, match="至少选择一种导出内容"):
         app.validate_before_processing()
-    app.export_origin_opju.set(True)
+    app.export_publication_figures.set(True)
     app.validate_before_processing()
 
 
@@ -501,9 +630,12 @@ def test_processing_settings_are_snapshotted_before_worker_thread(gui_app, tmp_p
     original_paths = list(settings["image_paths"])
     original_groups = list(settings["roi_groups"])
     assert settings["export_origin_opju"] is False
+    assert settings["export_publication_figures"] is False
 
     app.export_origin_opju.set(True)
     assert app.build_processing_settings()["export_origin_opju"] is True
+    app.export_publication_figures.set(True)
+    assert app.build_processing_settings()["export_publication_figures"] is True
 
     app.output_folder.set(str(tmp_path / "changed_out"))
     app.image_paths.clear()
@@ -550,6 +682,47 @@ def test_background_processing_finishes_even_if_ui_queue_is_not_drained(gui_app,
 
     assert app.is_processing is False
     assert (tmp_path / "out" / "core" / "strain_G01.txt").exists()
+
+
+def test_publication_figure_export_writes_high_res_and_vector_outputs(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    monkeypatch.setattr(ezdic.messagebox, "showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ezdic, "open_output_folder", lambda path: None, raising=False)
+    monkeypatch.setattr(app, "post_to_ui", lambda callback: callback())
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    for idx in range(3):
+        arr = np.full((100, 160), 30, dtype=np.uint8)
+        arr[30:60, 20 + idx:50 + idx] = patch
+        arr[30:60, 90 + idx:120 + idx] = patch
+        ok, data = cv2.imencode(".png", arr)
+        assert ok
+        data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
+
+    output_dir = tmp_path / "out"
+    app.image_folder.set(str(image_dir))
+    app.output_folder.set(str(output_dir))
+    app.load_first_image()
+    app.roi1 = (20, 30, 30, 30)
+    app.roi2 = (90, 30, 30, 30)
+    app.strain_mode.set("x")
+    app.sync_strain_mode_display()
+    app.add_current_group()
+    app.export_engineering_png.set(False)
+    app.export_publication_figures.set(True)
+
+    app.process_images(app.build_processing_settings())
+
+    pub_dir = output_dir / "optional" / "publication_figures"
+    for suffix in [".png", ".tiff", ".pdf", ".svg", ".eps"]:
+        path = pub_dir / f"engineering_strain_G01{suffix}"
+        assert path.exists()
+        assert path.stat().st_size > 0
+    assert (pub_dir / "engineering_strain_all_groups.pdf").exists()
 
 
 def test_origin_opju_failure_does_not_cancel_existing_exports(gui_app, tmp_path, monkeypatch):
@@ -711,6 +884,11 @@ def test_release_support_files_exist_and_include_usage_limits():
     assert "Origin-compatible TXT" in github_readme_text
     assert "Origin OPJU" in github_readme_text
     assert "OriginPro 2021+" in readme_text
+    assert "Publication-style figure package" in github_readme_text
+    assert "PNG/TIFF/PDF/SVG/EPS" in github_readme_text
+    assert "Publication Figure Package" in readme_text
+    assert "optional/publication_figures" in readme_text
+    assert "PNG/TIFF/PDF/SVG/EPS" in readme_text
     assert "Digital image correlation" in github_readme_text
     assert "Dr. Delun Gong" in github_readme_text
     assert DOI in github_readme_text

@@ -51,10 +51,119 @@ plt.rcParams["font.sans-serif"] = [
     "Microsoft YaHei",
     "SimHei",
     "SimSun",
+    "Arial",
+    "Helvetica",
     "Arial Unicode MS",
     "DejaVu Sans",
 ]
 plt.rcParams["axes.unicode_minus"] = False
+plt.rcParams["pdf.fonttype"] = 42
+plt.rcParams["ps.fonttype"] = 42
+plt.rcParams["svg.fonttype"] = "none"
+
+PLOT_COLOR_CYCLE = [
+    "#0072B2",  # blue
+    "#D55E00",  # vermillion
+    "#009E73",  # green
+    "#CC79A7",  # reddish purple
+    "#E69F00",  # orange
+    "#56B4E9",  # sky blue
+    "#000000",  # black
+]
+
+PLOT_EXPORT_FORMATS = ("png", "tiff", "pdf", "svg", "eps")
+PLOT_EXPORT_PRESETS = {
+    "single_column": {
+        "figsize": (3.45, 2.55),
+        "dpi": 600,
+        "font_size": 8,
+        "label_size": 8,
+        "tick_size": 7,
+        "legend_size": 7,
+        "title_size": 8,
+        "line_width": 1.15,
+        "marker_size": 18,
+        "axis_line_width": 0.8,
+        "grid_alpha": 0.18,
+        "colorbar_label_size": 8,
+        "colorbar_tick_size": 7,
+        "colorbar_fraction": 0.046,
+        "colorbar_pad": 0.035,
+        "constrained_layout": True,
+    },
+    "double_column": {
+        "figsize": (7.1, 4.2),
+        "dpi": 600,
+        "font_size": 9,
+        "label_size": 9,
+        "tick_size": 8,
+        "legend_size": 8,
+        "title_size": 9,
+        "line_width": 1.25,
+        "marker_size": 20,
+        "axis_line_width": 0.85,
+        "grid_alpha": 0.18,
+        "colorbar_label_size": 9,
+        "colorbar_tick_size": 8,
+        "colorbar_fraction": 0.042,
+        "colorbar_pad": 0.03,
+        "constrained_layout": True,
+    },
+    "presentation": {
+        "figsize": (10.0, 5.8),
+        "dpi": 300,
+        "font_size": 13,
+        "label_size": 13,
+        "tick_size": 11,
+        "legend_size": 11,
+        "title_size": 14,
+        "line_width": 2.0,
+        "marker_size": 34,
+        "axis_line_width": 1.1,
+        "grid_alpha": 0.22,
+        "colorbar_label_size": 13,
+        "colorbar_tick_size": 11,
+        "colorbar_fraction": 0.038,
+        "colorbar_pad": 0.03,
+        "constrained_layout": True,
+    },
+    "raw_inspection": {
+        "figsize": (7.0, 4.6),
+        "dpi": 300,
+        "font_size": 10,
+        "label_size": 10,
+        "tick_size": 9,
+        "legend_size": 9,
+        "title_size": 11,
+        "line_width": 1.2,
+        "marker_size": 20,
+        "axis_line_width": 0.9,
+        "grid_alpha": 0.25,
+        "colorbar_label_size": 10,
+        "colorbar_tick_size": 9,
+        "colorbar_fraction": 0.044,
+        "colorbar_pad": 0.035,
+        "constrained_layout": True,
+    },
+    "publication": {
+        "figsize": (7.1, 4.2),
+        "dpi": 600,
+        "font_size": 9,
+        "label_size": 9,
+        "tick_size": 8,
+        "legend_size": 8,
+        "title_size": 9,
+        "line_width": 1.25,
+        "marker_size": 20,
+        "axis_line_width": 0.85,
+        "grid_alpha": 0.18,
+        "colorbar_label_size": 9,
+        "colorbar_tick_size": 8,
+        "colorbar_fraction": 0.042,
+        "colorbar_pad": 0.03,
+        "constrained_layout": True,
+    },
+}
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -1016,7 +1125,62 @@ def write_origin_opju_project(df, groups, path, origin_module=None):
     return path
 
 
-def plot_engineering_strain(gdf, path, title):
+def get_plot_preset(name="publication"):
+    preset = PLOT_EXPORT_PRESETS.get(name, PLOT_EXPORT_PRESETS["publication"])
+    return dict(preset)
+
+
+def create_plot_figure(preset_name="publication"):
+    preset = get_plot_preset(preset_name)
+    fig, ax = plt.subplots(
+        figsize=preset["figsize"],
+        constrained_layout=preset["constrained_layout"],
+    )
+    fig.patch.set_facecolor("white")
+    ax.set_prop_cycle(color=PLOT_COLOR_CYCLE)
+    return fig, ax, preset
+
+
+def style_publication_axes(ax, preset, xlabel, ylabel, title=None, show_legend=True):
+    ax.set_xlabel(xlabel, fontsize=preset["label_size"])
+    ax.set_ylabel(ylabel, fontsize=preset["label_size"])
+    if title:
+        ax.set_title(title, fontsize=preset["title_size"], pad=8)
+    ax.tick_params(axis="both", labelsize=preset["tick_size"], width=preset["axis_line_width"], length=3.5)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("bottom", "left"):
+        ax.spines[side].set_linewidth(preset["axis_line_width"])
+    ax.grid(True, color="#b8c2cc", alpha=preset["grid_alpha"], linewidth=0.55)
+    ax.margins(x=0.02, y=0.08)
+    if show_legend:
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ncol = 2 if len(handles) > 6 else 1
+            ax.legend(
+                loc="best",
+                frameon=False,
+                fontsize=preset["legend_size"],
+                handlelength=1.6,
+                borderaxespad=0.3,
+                ncol=ncol,
+            )
+
+
+def save_plot_figure(fig, path, preset_name="publication"):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    preset = get_plot_preset(preset_name)
+    fig.savefig(path, dpi=preset["dpi"], bbox_inches="tight", pad_inches=0.04, facecolor="white")
+    plt.close(fig)
+
+
+def publication_figure_paths(folder, stem):
+    folder = Path(folder)
+    return [folder / f"{stem}.{ext}" for ext in PLOT_EXPORT_FORMATS]
+
+
+def plot_engineering_strain(gdf, path, title, preset_name="publication"):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1030,12 +1194,12 @@ def plot_engineering_strain(gdf, path, title):
     adaptive_mask = accept_mode.eq("adaptive") & (~rejected_mask) & strain.notna()
     normal_mask = (~rejected_mask) & (~adaptive_mask) & strain.notna()
 
-    plt.figure(figsize=(7, 5))
-    plt.plot(frame, strain, color="#1f77b4", linewidth=1, alpha=0.65)
-    plt.scatter(frame[normal_mask], strain[normal_mask], color="#1f77b4", s=18, label="Accepted")
+    fig, ax, preset = create_plot_figure(preset_name)
+    ax.plot(frame, strain, color=PLOT_COLOR_CYCLE[0], linewidth=preset["line_width"], alpha=0.72)
+    ax.scatter(frame[normal_mask], strain[normal_mask], color=PLOT_COLOR_CYCLE[0], s=preset["marker_size"], label="Accepted")
 
     if adaptive_mask.any():
-        plt.scatter(frame[adaptive_mask], strain[adaptive_mask], color="#ff7f0e", s=30, label="Adaptive")
+        ax.scatter(frame[adaptive_mask], strain[adaptive_mask], color="#E69F00", s=preset["marker_size"] * 1.35, label="Adaptive")
 
     if rejected_mask.any():
         finite_strain = strain[np.isfinite(strain)]
@@ -1046,29 +1210,29 @@ def plot_engineering_strain(gdf, path, title):
             rejected_y = np.full(int(rejected_mask.sum()), ymin - 0.08 * span)
         else:
             rejected_y = np.zeros(int(rejected_mask.sum()))
-        plt.scatter(frame[rejected_mask], rejected_y, color="#d62728", marker="x", s=38, label="Rejected/NaN")
+        ax.scatter(frame[rejected_mask], rejected_y, color="#CC3311", marker="x", s=preset["marker_size"] * 1.75, label="Rejected/NaN")
 
-    plt.xlabel("Frame")
-    plt.ylabel("Engineering strain")
-    plt.title(title)
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(path, dpi=300)
-    plt.close()
+    style_publication_axes(ax, preset, "Frame", "Engineering strain (-)", title=title)
+    save_plot_figure(fig, path, preset_name)
 
 
-def plot_all_groups_engineering_strain(df, groups, path):
+def plot_all_groups_engineering_strain(df, groups, path, preset_name="publication"):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    plt.figure(figsize=(8, 5))
+    fig, ax, preset = create_plot_figure(preset_name)
     for group in groups:
         gname = group["name"]
         gdf = df[df["group"] == gname]
         if gdf.empty:
             continue
-        plt.plot(gdf["frame_global_1based"], gdf["engineering_strain"], linewidth=1, alpha=0.55, label=gname)
+        ax.plot(
+            gdf["frame_global_1based"],
+            gdf["engineering_strain"],
+            linewidth=max(preset["line_width"] * 0.8, 0.8),
+            alpha=0.56,
+            label=gname,
+        )
 
     mean_table = build_mean_strain_table(df, groups)
     if not mean_table.empty:
@@ -1077,24 +1241,25 @@ def plot_all_groups_engineering_strain(df, groups, path):
             key = col.replace("MeanEngineeringStrain_", "", 1)
             mean = pd.to_numeric(mean_table[col], errors="coerce").astype(float)
             std_col = f"StdEngineeringStrain_{key}"
-            plt.plot(frame, mean, linewidth=2.4, label=f"Mean {key}")
+            line = ax.plot(frame, mean, linewidth=preset["line_width"] * 1.8, label=f"Mean {key}")[0]
             if std_col in mean_table.columns:
                 std = pd.to_numeric(mean_table[std_col], errors="coerce").astype(float)
                 finite = mean.notna() & std.notna() & np.isfinite(mean) & np.isfinite(std)
                 if finite.any():
-                    plt.fill_between(frame[finite], mean[finite] - std[finite], mean[finite] + std[finite], alpha=0.12)
+                    ax.fill_between(
+                        frame[finite],
+                        mean[finite] - std[finite],
+                        mean[finite] + std[finite],
+                        color=line.get_color(),
+                        alpha=0.13,
+                        linewidth=0,
+                    )
 
-    plt.xlabel("Frame")
-    plt.ylabel("Engineering strain")
-    plt.title("Engineering strain - all ROI groups")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(path, dpi=300)
-    plt.close()
+    style_publication_axes(ax, preset, "Frame", "Engineering strain (-)", title="Engineering strain - all ROI groups")
+    save_plot_figure(fig, path, preset_name)
 
 
-def plot_poisson_ratio(df, groups, path):
+def plot_poisson_ratio(df, groups, path, preset_name="publication"):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1103,10 +1268,10 @@ def plot_poisson_ratio(df, groups, path):
     ratio = table["PoissonRatio"].astype(float)
     valid = ratio.notna() & np.isfinite(ratio)
 
-    plt.figure(figsize=(7, 5))
-    plt.plot(frame, ratio, color="#2ca02c", linewidth=1, alpha=0.7)
+    fig, ax, preset = create_plot_figure(preset_name)
+    ax.plot(frame, ratio, color="#009E73", linewidth=preset["line_width"], alpha=0.78)
     if valid.any():
-        plt.scatter(frame[valid], ratio[valid], color="#2ca02c", s=18, label="Valid")
+        ax.scatter(frame[valid], ratio[valid], color="#009E73", s=preset["marker_size"], label="Valid")
     invalid = ~valid
     if invalid.any():
         finite_ratio = ratio[valid]
@@ -1117,16 +1282,22 @@ def plot_poisson_ratio(df, groups, path):
             invalid_y = np.full(int(invalid.sum()), ymin - 0.08 * span)
         else:
             invalid_y = np.zeros(int(invalid.sum()))
-        plt.scatter(frame[invalid], invalid_y, color="#d62728", marker="x", s=38, label="NaN")
+        ax.scatter(frame[invalid], invalid_y, color="#CC3311", marker="x", s=preset["marker_size"] * 1.75, label="NaN")
 
-    plt.xlabel("Frame")
-    plt.ylabel("Poisson ratio")
-    plt.title("Poisson ratio")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(path, dpi=300)
-    plt.close()
+    style_publication_axes(ax, preset, "Frame", "Poisson ratio (-)", title="Poisson ratio")
+    save_plot_figure(fig, path, preset_name)
+
+
+def plot_correlation_scores(gdf, path, group_name, hard_corr, soft_corr, preset_name="publication"):
+    fig, ax, preset = create_plot_figure(preset_name)
+    frame = gdf["frame_global_1based"]
+    ax.plot(frame, gdf["corr_score_roi1"], marker="o", markersize=4, linewidth=preset["line_width"], label="ROI 1")
+    ax.plot(frame, gdf["corr_score_roi2"], marker="s", markersize=4, linewidth=preset["line_width"], label="ROI 2")
+    ax.axhline(hard_corr, color="#CC3311", linestyle="--", linewidth=preset["line_width"] * 0.9, label="strict threshold")
+    ax.axhline(soft_corr, color="#E69F00", linestyle=":", linewidth=preset["line_width"] * 0.9, label="weak threshold")
+    ax.set_ylim(-0.05, 1.05)
+    style_publication_axes(ax, preset, "Frame", "Normalized correlation score (-)", title=f"Correlation scores - {group_name}")
+    save_plot_figure(fig, path, preset_name)
 
 
 def build_qc_summary(df):
@@ -1276,6 +1447,7 @@ class MultiROIGUI:
         self.export_origin_txt = tk.BooleanVar(value=True)
         self.export_origin_opju = tk.BooleanVar(value=False)
         self.export_engineering_png = tk.BooleanVar(value=True)
+        self.export_publication_figures = tk.BooleanVar(value=False)
         self.export_qc_summary = tk.BooleanVar(value=True)
         self.export_full_csv = tk.BooleanVar(value=False)
         self.export_corr_plot = tk.BooleanVar(value=False)
@@ -1418,10 +1590,17 @@ class MultiROIGUI:
         self.style.configure("TButton", padding=(10, 5))
         self.style.configure("Compact.TButton", padding=(8, 4))
         self.style.configure("Primary.TButton", font=primary_font, padding=(14, 8), foreground="#ffffff", background=self.primary_color)
+        self.style.configure("Secondary.TButton", padding=(9, 5), foreground=self.primary_color, background=self.card_bg)
+        self.style.configure("Danger.TButton", padding=(8, 4), foreground=self.warning_color, background=self.card_bg)
         self.style.map(
             "Primary.TButton",
             foreground=[("disabled", "#d9d9d9"), ("active", "#ffffff")],
             background=[("disabled", "#8fa8bf"), ("active", self.primary_active), ("pressed", "#074b8a")],
+        )
+        self.style.map(
+            "Danger.TButton",
+            foreground=[("disabled", self.muted_color), ("active", "#ffffff")],
+            background=[("active", self.warning_color), ("pressed", self.warning_color)],
         )
         self.style.configure("TEntry", padding=(4, 3))
         self.style.configure("TCombobox", padding=(4, 3))
@@ -1498,6 +1677,7 @@ class MultiROIGUI:
 
         self._build_project_section(self.main_frame)
         self._build_workspace(self.main_frame)
+        self.update_workflow_action_states()
 
     def _build_project_section(self, parent):
         self.project_frame = ttk.LabelFrame(parent, text="1. 图像与输出", padding=(8, 4))
@@ -1518,9 +1698,9 @@ class MultiROIGUI:
         self.add_tooltip(self.image_folder_entry, image_folder_tip)
         self.select_image_button = ttk.Button(
             self.project_frame,
-            text="选择文件夹",
+            text="选图像文件夹",
             command=self.select_image_folder,
-            style="Compact.TButton",
+            style="Secondary.TButton",
         )
         self.select_image_button.grid(row=0, column=2, sticky="ew", pady=1)
         self.add_tooltip(self.select_image_button, image_folder_tip)
@@ -1539,9 +1719,9 @@ class MultiROIGUI:
         self.add_tooltip(self.output_folder_entry, output_folder_tip)
         self.select_output_button = ttk.Button(
             self.project_frame,
-            text="选择输出",
+            text="选输出文件夹",
             command=self.select_output_folder,
-            style="Compact.TButton",
+            style="Secondary.TButton",
         )
         self.select_output_button.grid(row=1, column=2, sticky="ew", pady=1)
         self.add_tooltip(self.select_output_button, output_folder_tip)
@@ -1557,9 +1737,9 @@ class MultiROIGUI:
 
         self.load_images_button = ttk.Button(
             preview_row,
-            text="加载图像序列",
+            text="加载/刷新序列",
             command=self.load_first_image,
-            style="Compact.TButton",
+            style="Secondary.TButton",
         )
         self.load_images_button.grid(row=0, column=0, padx=(0, 8), pady=1, sticky="w")
         self.add_tooltip(
@@ -1578,7 +1758,7 @@ class MultiROIGUI:
         self.preview_frame_entry = ttk.Entry(preview_row, textvariable=self.preview_frame_1based, width=6)
         self.preview_frame_entry.grid(row=0, column=2, padx=(0, 4), sticky="w")
         self.add_tooltip(self.preview_frame_entry, preview_tip)
-        self.show_preview_button = ttk.Button(preview_row, text="显示", command=self.go_to_preview_frame, style="Compact.TButton")
+        self.show_preview_button = ttk.Button(preview_row, text="显示预览帧", command=self.go_to_preview_frame, style="Compact.TButton")
         self.show_preview_button.grid(row=0, column=3, padx=(0, 4), sticky="w")
         self.add_tooltip(self.show_preview_button, preview_tip)
 
@@ -1607,7 +1787,7 @@ class MultiROIGUI:
 
         self.set_start_button = ttk.Button(
             range_row,
-            text="当前帧设为起始/参考",
+            text="设为起始/参考",
             command=self.set_start_to_current,
             style="Compact.TButton",
         )
@@ -1618,7 +1798,7 @@ class MultiROIGUI:
             "如果已经添加 ROI 组，修改参考帧通常需要清空并重画，否则模板和图像可能不对应。",
         )
 
-        self.set_end_button = ttk.Button(range_row, text="当前帧设为结束", command=self.set_end_to_current, style="Compact.TButton")
+        self.set_end_button = ttk.Button(range_row, text="设为结束帧", command=self.set_end_to_current, style="Compact.TButton")
         self.set_end_button.grid(row=0, column=5, sticky="w")
         self.add_tooltip(
             self.set_end_button,
@@ -1969,14 +2149,14 @@ class MultiROIGUI:
             "把列表中选中的 ROI 组载回当前编辑状态，便于检查、微调或更新。"
             "载入本身不会改变导出结果，只有随后点击更新选中组才会覆盖原组。",
         )
-        self.delete_group_button = ttk.Button(action_row, text="删除选中组", command=self.delete_selected_group, style="Compact.TButton")
+        self.delete_group_button = ttk.Button(action_row, text="删除选中组", command=self.delete_selected_group, style="Danger.TButton")
         self.delete_group_button.grid(row=0, column=2, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(
             self.delete_group_button,
             "从列表中删除选中的 ROI 组；不会删除已经导出的文件，但本次重新分析时该组不再参与计算。"
             "如果用于泊松比，删除轴向或横向组会导致泊松比无法导出。",
         )
-        self.clear_rois_button = ttk.Button(action_row, text="清除当前 ROI", command=self.clear_current_rois, style="Compact.TButton")
+        self.clear_rois_button = ttk.Button(action_row, text="清除当前 ROI", command=self.clear_current_rois, style="Danger.TButton")
         self.clear_rois_button.grid(row=1, column=0, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(
             self.clear_rois_button,
@@ -2121,16 +2301,59 @@ class MultiROIGUI:
         # 快速预设按钮（科研常用组合）—— 使用 grid 以避免与下方 checkbutton 冲突
         preset_bar = ttk.Frame(export_frame, style="Card.TFrame")
         preset_bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self.export_preset_label = ttk.Label(preset_bar, text="导出预设：", style="Key.TLabel")
+        self.export_preset_label.pack(side=tk.LEFT, padx=(0, 4))
+        self.add_tooltip(
+            self.export_preset_label,
+            "这里是导出选项的快捷组合，只改变下方勾选状态，不会立即开始分析或写入文件。",
+        )
 
-        ttk.Button(preset_bar, text="科研推荐", command=self._apply_research_preset, style="Compact.TButton", width=9).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(preset_bar, text="快速查看", command=self._apply_quick_view_preset, style="Compact.TButton", width=9).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(preset_bar, text="全部导出", command=self._apply_all_export_preset, style="Compact.TButton", width=9).pack(side=tk.LEFT)
+        self.export_research_preset_button = ttk.Button(
+            preset_bar,
+            text="推荐导出",
+            command=self._apply_research_preset,
+            style="Secondary.TButton",
+            width=11,
+        )
+        self.export_research_preset_button.pack(side=tk.LEFT, padx=(0, 4))
+        self.add_tooltip(
+            self.export_research_preset_button,
+            "勾选核心 TXT、工程应变 PNG、QC 摘要和参数记录；适合作为日常科研分析默认组合，"
+            "不会生成大量 overlay 或完整 CSV 文件。",
+        )
+        self.export_quick_preset_button = ttk.Button(
+            preset_bar,
+            text="快速查看导出",
+            command=self._apply_quick_view_preset,
+            style="Compact.TButton",
+            width=11,
+        )
+        self.export_quick_preset_button.pack(side=tk.LEFT, padx=(0, 4))
+        self.add_tooltip(
+            self.export_quick_preset_button,
+            "只保留工程应变 PNG 和 QC 摘要；适合快速检查追踪趋势和异常帧，"
+            "不作为最终归档或论文图表包。",
+        )
+        self.export_all_preset_button = ttk.Button(
+            preset_bar,
+            text="全量复核导出",
+            command=self._apply_all_export_preset,
+            style="Compact.TButton",
+            width=11,
+        )
+        self.export_all_preset_button.pack(side=tk.LEFT)
+        self.add_tooltip(
+            self.export_all_preset_button,
+            "勾选 TXT、OPJU、CSV、QC、相关系数、overlay、参数和论文级图表包；"
+            "适合复核或归档，文件数量会明显增加。",
+        )
 
         # 使用更宽松的垂直布局 + 更好间距，缓解 cramped 感觉
         export_options = [
             ("Origin TXT（三列核心数据）", self.export_origin_txt, "勾选后导出 Frame、EngineeringStrain、TrueStrain 三列文本，适合直接导入 Origin；不勾选则不生成最小核心数据表。"),
             ("Origin OPJU 项目（直接导入 OriginPro）", self.export_origin_opju, "勾选后启动/连接 OriginPro 并保存 ezDIC_results.opju；需要 OriginPro 2021+ 和 originpro 包，不满足环境时可能失败但不会取消已有 TXT/PNG 导出。"),
             ("工程应变 PNG", self.export_engineering_png, "勾选后为每组 ROI 输出工程应变-帧数曲线；不勾选可减少文件数量，但少了快速查看趋势的图。"),
+            ("论文级图表包（PNG/TIFF/PDF/SVG/EPS）", self.export_publication_figures, "勾选后额外导出 600 dpi PNG/TIFF 和 PDF/SVG/EPS 矢量图，使用统一论文风格；适合投稿前在 Origin/Illustrator/Inkscape 中继续排版。"),
             ("QC 摘要 TXT", self.export_qc_summary, "勾选后输出接受帧、拒绝帧、自适应接受和相关系数统计；建议保留，用于判断数据是否可用于科研结论。"),
             ("完整 CSV", self.export_full_csv, "勾选后输出完整追踪数据和 ROI 坐标历史；文件较大，适合复查、调试或二次分析，不建议只依赖它做快速汇报。"),
             ("相关系数曲线 PNG", self.export_corr_plot, "勾选后输出相关系数随帧变化曲线；用于发现局部失焦、遮挡或纹理丢失导致的追踪质量下降。"),
@@ -2211,20 +2434,30 @@ class MultiROIGUI:
         viewer_btns.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self.viewer_export_btn = ttk.Button(
             viewer_btns,
-            text="导出当前图",
+            text="导出预览图",
             command=self.export_viewer_figure,
-            style="Compact.TButton",
+            style="Secondary.TButton",
             state=tk.DISABLED,
         )
         self.viewer_export_btn.grid(row=0, column=0, padx=(0, 6))
+        self.add_tooltip(
+            self.viewer_export_btn,
+            "将当前应用内曲线预览导出为图片；只有分析完成并生成预览图后才可用。"
+            "若需要投稿级多格式图，请勾选“论文级图表包”。",
+        )
         self.viewer_clear_btn = ttk.Button(
             viewer_btns,
-            text="清除预览",
+            text="清除预览图",
             command=self.clear_viewer,
-            style="Compact.TButton",
+            style="Danger.TButton",
             state=tk.DISABLED,
         )
         self.viewer_clear_btn.grid(row=0, column=1)
+        self.add_tooltip(
+            self.viewer_clear_btn,
+            "清除当前窗口中的结果曲线预览，不删除已经导出的 TXT/CSV/PNG 文件；"
+            "分析完成并显示预览后才可用。",
+        )
 
         # The actual matplotlib canvas will be created on demand inside viewer_content_frame
         self.viewer_content_frame = ttk.Frame(self.viewer_frame, style="Card.TFrame")
@@ -2333,6 +2566,15 @@ class MultiROIGUI:
         self.log_text.see(tk.END)
         self.root.update_idletasks()
 
+    def log_user_error(self, context, exc, details=None):
+        message = str(exc).strip() or exc.__class__.__name__
+        self.log(f"{context}失败：{message}")
+        self.log("请检查输入路径、图像文件、ROI 和参数设置；详细调试信息已输出到控制台。")
+        if details:
+            print(details)
+        else:
+            traceback.print_exc()
+
     def show_completion_and_open_output_folder(self, done_msg, output_dir):
         messagebox.showinfo("完成", done_msg)
         try:
@@ -2410,9 +2652,10 @@ class MultiROIGUI:
             if self.loaded_image_folder != folder_key:
                 self.clear_sequence_dependent_state()
                 self.loaded_image_folder = folder_key
-                self.show_image()
+            self.show_image()
             self.log(f"找到 {n} 张图像。")
             self.log(f"当前预览：第 {self.current_preview_index + 1} 帧 / 共 {n} 帧")
+            self.update_workflow_action_states()
         except Exception as exc:
             self.image_paths = old_state["image_paths"]
             self.loaded_image_folder = old_state["loaded_image_folder"]
@@ -2427,7 +2670,8 @@ class MultiROIGUI:
             self.current_preview_index = old_state["current_preview_index"]
             self.show_image()
             messagebox.showerror("加载失败", str(exc))
-            self.log(traceback.format_exc())
+            self.log_user_error("加载图像序列", exc)
+            self.update_workflow_action_states()
 
     def load_preview_frame(self, index0):
         if not self.image_paths:
@@ -2477,7 +2721,7 @@ class MultiROIGUI:
             self.load_preview_frame(idx)
         except Exception as exc:
             messagebox.showerror("预览失败", str(exc))
-            self.log(traceback.format_exc())
+            self.log_user_error("预览帧", exc)
 
     def step_preview_frame(self, step):
         if not self.image_paths:
@@ -2488,7 +2732,7 @@ class MultiROIGUI:
             self.load_preview_frame(self.current_preview_index + int(step))
         except Exception as exc:
             messagebox.showerror("预览失败", str(exc))
-            self.log(traceback.format_exc())
+            self.log_user_error("预览帧", exc)
 
     def clear_groups_if_start_changes(self, new_start_1based):
         old_start = self.start_frame_1based.get()
@@ -2715,6 +2959,39 @@ class MultiROIGUI:
                 except Exception:
                     pass
 
+    def update_workflow_action_states(self):
+        """根据当前工作流进度控制关键操作按钮，避免用户在不可运行状态下误点。"""
+        has_sequence = bool(self.image_paths) and self.first_img8 is not None
+        has_groups = bool(self.roi_groups)
+        has_current_roi = self.roi1 is not None or self.roi2 is not None
+        is_processing = getattr(self, "is_processing", False)
+
+        if hasattr(self, "start_button"):
+            can_start = has_sequence and has_groups and not is_processing
+            self.start_button.config(state=tk.NORMAL if can_start else tk.DISABLED)
+
+        if hasattr(self, "clear_rois_button"):
+            can_clear = has_current_roi and not is_processing
+            self.clear_rois_button.config(state=tk.NORMAL if can_clear else tk.DISABLED)
+
+        can_manage_groups = has_groups and not is_processing
+        for attr in ("load_group_button", "update_group_button", "delete_group_button"):
+            if hasattr(self, attr):
+                getattr(self, attr).config(state=tk.NORMAL if can_manage_groups else tk.DISABLED)
+
+        if hasattr(self, "workflow_hint_var"):
+            if is_processing:
+                hint = "正在处理：请等待当前分析完成，完成后会提示输出位置。"
+            elif not has_sequence:
+                hint = "下一步：选择图像文件夹并点击“加载/刷新序列”。"
+            elif not has_groups:
+                hint = "下一步：在参考帧画 ROI1/ROI2，并添加为 ROI 组。"
+            else:
+                hint = "可以开始分析；开始前请确认参考帧、ROI 方向和导出内容。"
+            self.workflow_hint_var.set(hint)
+
+        self._update_image_toolbar_state()
+
     def _on_mouse_wheel(self, event):
         """支持鼠标滚轮缩放，围绕鼠标指针位置进行（专业图像工具标准行为）。"""
         if self.current_fullres_img8 is None:
@@ -2783,10 +3060,24 @@ class MultiROIGUI:
         self.log(f"切换到绘制 ROI {idx}")
 
     def clear_current_rois(self):
+        if self.roi1 is None and self.roi2 is None:
+            self.status_var.set("当前没有正在编辑的 ROI。")
+            self.log("当前没有正在编辑的 ROI，无需清除。")
+            return
+
+        if not messagebox.askyesno(
+            "清除当前 ROI",
+            "确定清除当前正在编辑的 ROI1/ROI2 吗？\n\n"
+            "已添加到 ROI 组列表中的结果不会被删除；如需删除已保存的组，请使用“删除选中组”。",
+        ):
+            self.log("已取消清除当前 ROI。")
+            return
+
         self.roi1 = None
         self.roi2 = None
         self.show_image()
         self.log("已清除当前 ROI。")
+        self.update_workflow_action_states()
 
     def on_mouse_down(self, event):
         if self.first_img8 is None:
@@ -2851,6 +3142,7 @@ class MultiROIGUI:
             self.status_var.set("ROI 2 已设置。可以添加为一组。")
 
         self.show_image()
+        self.update_workflow_action_states()
 
     def redraw_rois_and_groups(self):
         if self.display_img is None:
@@ -2960,7 +3252,7 @@ class MultiROIGUI:
                 f"当前 ROI 是在第 {current_1based} 帧上画的，"
                 f"但分析起始/参考帧是第 {start_1based} 帧。\n\n"
                 f"为了保证模板和初始 ROI 一致，请先显示第 {start_1based} 帧再画 ROI，"
-                f"或者点击“当前帧设为起始/参考”。"
+                f"或者点击“设为起始/参考”。"
             )
             raise RuntimeError(msg)
 
@@ -3102,6 +3394,7 @@ class MultiROIGUI:
         self.group_name_var.set(group["name"])
         self.log_group_info("已载入", group)
         self.show_image()
+        self.update_workflow_action_states()
 
     def delete_selected_group(self):
         idx = self.get_selected_group_iid()
@@ -3157,6 +3450,7 @@ class MultiROIGUI:
                 str(g["roi2"]),
             )
             self.group_tree.insert("", "end", iid=str(idx), values=values)
+        self.update_workflow_action_states()
 
     def log_group_info(self, prefix, group):
         self.log(
@@ -3205,6 +3499,7 @@ class MultiROIGUI:
                 self.export_origin_txt,
                 self.export_origin_opju,
                 self.export_engineering_png,
+                self.export_publication_figures,
                 self.export_qc_summary,
                 self.export_full_csv,
                 self.export_corr_plot,
@@ -3316,6 +3611,7 @@ class MultiROIGUI:
             "export_origin_txt": bool(self.export_origin_txt.get()),
             "export_origin_opju": bool(self.export_origin_opju.get()),
             "export_engineering_png": bool(self.export_engineering_png.get()),
+            "export_publication_figures": bool(self.export_publication_figures.get()),
             "export_qc_summary": bool(self.export_qc_summary.get()),
             "export_full_csv": bool(self.export_full_csv.get()),
             "export_corr_plot": bool(self.export_corr_plot.get()),
@@ -3363,9 +3659,7 @@ class MultiROIGUI:
 
         self.is_processing = True
         self.progress["value"] = 0
-        if hasattr(self, "start_button"):
-            self.start_button.config(state=tk.DISABLED)
-        self._update_image_toolbar_state()  # 处理中禁用图像工具栏
+        self.update_workflow_action_states()
 
         thread = threading.Thread(target=self.process_images_thread, args=(settings,), daemon=True)
         thread.start()
@@ -3374,13 +3668,13 @@ class MultiROIGUI:
         try:
             self.process_images(settings)
         except Exception as exc:
-            self.post_to_ui(lambda: messagebox.showerror("处理失败", str(exc)))
-            self.post_to_ui(lambda: self.log(traceback.format_exc()))
+            message = str(exc)
+            details = traceback.format_exc()
+            self.post_to_ui(lambda m=message: messagebox.showerror("处理失败", m))
+            self.post_to_ui(lambda e=exc, d=details: self.log_user_error("批量处理", e, d))
         finally:
             self.is_processing = False
-            if hasattr(self, "start_button"):
-                self.post_to_ui(lambda: self.start_button.config(state=tk.NORMAL))
-            self.post_to_ui(lambda: self._update_image_toolbar_state())  # 恢复工具栏
+            self.post_to_ui(lambda: self.update_workflow_action_states())
 
     def init_group_states(self, first_img8, groups=None):
         if groups is None:
@@ -3685,6 +3979,7 @@ class MultiROIGUI:
 
         export_origin_txt = settings["export_origin_txt"]
         export_engineering_png = settings["export_engineering_png"]
+        export_publication_figures = settings["export_publication_figures"]
         export_qc_summary = settings["export_qc_summary"]
         export_full_csv = settings["export_full_csv"]
         export_corr_plot = settings["export_corr_plot"]
@@ -3800,6 +4095,10 @@ class MultiROIGUI:
         if export_origin_txt or export_engineering_png or export_origin_opju:
             core_dir.mkdir(parents=True, exist_ok=True)
 
+        publication_dir = optional_dir / "publication_figures"
+        if export_publication_figures:
+            publication_dir.mkdir(parents=True, exist_ok=True)
+
         for group in roi_groups:
             gname = group["name"]
             sg = safe_name(gname)
@@ -3814,6 +4113,11 @@ class MultiROIGUI:
                 fig_path = core_dir / f"engineering_strain_{sg}.png"
                 plot_engineering_strain(gdf, fig_path, f"Engineering strain - {gname}")
                 written_paths.append(fig_path)
+
+            if export_publication_figures:
+                for fig_path in publication_figure_paths(publication_dir, f"engineering_strain_{sg}"):
+                    plot_engineering_strain(gdf, fig_path, f"Engineering strain - {gname}", preset_name="publication")
+                    written_paths.append(fig_path)
 
         if export_origin_txt:
             all_txt = core_dir / "strain_all_groups.txt"
@@ -3838,6 +4142,16 @@ class MultiROIGUI:
                 poisson_fig = core_dir / "poisson_ratio.png"
                 plot_poisson_ratio(df, roi_groups, poisson_fig)
                 written_paths.append(poisson_fig)
+
+        if export_publication_figures:
+            for fig_path in publication_figure_paths(publication_dir, "engineering_strain_all_groups"):
+                plot_all_groups_engineering_strain(df, roi_groups, fig_path, preset_name="publication")
+                written_paths.append(fig_path)
+
+            if poisson_enabled:
+                for fig_path in publication_figure_paths(publication_dir, "poisson_ratio"):
+                    plot_poisson_ratio(df, roi_groups, fig_path, preset_name="publication")
+                    written_paths.append(fig_path)
 
         if export_origin_opju:
             opju_path = core_dir / ORIGIN_OPJU_FILENAME
@@ -3880,20 +4194,13 @@ class MultiROIGUI:
                 sg = safe_name(gname)
                 gdf = df[df["group"] == gname].copy()
                 corr_path = corr_dir / f"correlation_scores_{sg}.png"
-                plt.figure(figsize=(7, 5))
-                plt.plot(gdf["frame_global_1based"], gdf["corr_score_roi1"], marker="o", markersize=3, linewidth=1, label="ROI 1")
-                plt.plot(gdf["frame_global_1based"], gdf["corr_score_roi2"], marker="s", markersize=3, linewidth=1, label="ROI 2")
-                plt.axhline(hard_corr, linestyle="--", linewidth=1, label="strict threshold")
-                plt.axhline(soft_corr, linestyle=":", linewidth=1, label="weak threshold")
-                plt.xlabel("Frame")
-                plt.ylabel("Normalized correlation score")
-                plt.title(f"Correlation scores - {gname}")
-                plt.grid(True)
-                plt.legend()
-                plt.tight_layout()
-                plt.savefig(corr_path, dpi=300)
-                plt.close()
+                plot_correlation_scores(gdf, corr_path, gname, hard_corr, soft_corr, preset_name="raw_inspection")
                 written_paths.append(corr_path)
+
+                if export_publication_figures:
+                    for pub_corr_path in publication_figure_paths(publication_dir, f"correlation_scores_{sg}"):
+                        plot_correlation_scores(gdf, pub_corr_path, gname, hard_corr, soft_corr, preset_name="publication")
+                        written_paths.append(pub_corr_path)
 
         if export_parameters:
             param_dir = optional_dir / "parameters"
@@ -3919,6 +4226,7 @@ class MultiROIGUI:
                 f.write(f"fb_tolerance_px = {fb_tolerance}\n")
                 f.write(f"pixel_size_mm = {pixel_size_mm}\n")
                 f.write(f"overlay_every = {overlay_every}\n")
+                f.write(f"export_publication_figures = {export_publication_figures}\n")
                 f.write("\nGroups:\n")
                 for g in roi_groups:
                     f.write(
@@ -3959,6 +4267,7 @@ class MultiROIGUI:
         done_msg = (
             f"处理完成。\n"
             f"核心结果已保存到: {core_dir if (export_origin_txt or export_engineering_png or export_origin_opju) else output_dir}\n"
+            f"论文级图表包: {'已导出到 ' + str(publication_dir) if export_publication_figures else '未勾选'}\n"
             f"QC 状态: {qc_level}\n"
             f"Rejected frames: {n_rejected}\n"
             f"Adaptive accepted frames: {n_adaptive}"
@@ -4023,6 +4332,7 @@ class MultiROIGUI:
         self.export_full_csv.set(False)
         self.export_corr_plot.set(False)
         self.export_overlays.set(False)
+        self.export_publication_figures.set(False)
         self.export_origin_opju.set(False)
         self.log("已应用「科研推荐」导出预设")
 
@@ -4035,8 +4345,9 @@ class MultiROIGUI:
         self.export_full_csv.set(False)
         self.export_corr_plot.set(False)
         self.export_overlays.set(False)
+        self.export_publication_figures.set(False)
         self.export_origin_opju.set(False)
-        self.log("已应用「快速查看」导出预设")
+        self.log("已应用「快速查看导出」预设")
 
     def _apply_all_export_preset(self):
         """全部勾选（用于最完整的存档）"""
@@ -4044,10 +4355,11 @@ class MultiROIGUI:
             self.export_origin_txt, self.export_origin_opju,
             self.export_engineering_png, self.export_qc_summary,
             self.export_full_csv, self.export_corr_plot,
-            self.export_overlays, self.export_parameters
+            self.export_overlays, self.export_parameters,
+            self.export_publication_figures,
         ]:
             var.set(True)
-        self.log("已应用「全部导出」预设（注意文件会较多）")
+        self.log("已应用「全量复核导出」预设（注意文件会较多）")
 
     def _detect_poisson_capable(self, groups, df):
         roles = {normalize_roi_role(g.get("role", "none")) for g in groups}

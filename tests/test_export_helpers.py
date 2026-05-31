@@ -4,6 +4,7 @@ import builtins
 import numpy as np
 import pandas as pd
 import pytest
+from PIL import Image
 
 import dic_virtual_extensometer_gui_v7_multi_roi_range as ezdic
 
@@ -231,6 +232,70 @@ def test_plot_engineering_strain_writes_png_with_failure_markers(tmp_path):
 
     assert path.exists()
     assert path.stat().st_size > 0
+
+
+def test_publication_plot_presets_and_vector_export_are_available(tmp_path):
+    preset = ezdic.PLOT_EXPORT_PRESETS["publication"]
+    assert preset["dpi"] >= 600
+    assert "pdf" in ezdic.PLOT_EXPORT_FORMATS
+    assert "svg" in ezdic.PLOT_EXPORT_FORMATS
+    assert "eps" in ezdic.PLOT_EXPORT_FORMATS
+    assert "tiff" in ezdic.PLOT_EXPORT_FORMATS
+
+    path = tmp_path / "engineering_strain_G01.svg"
+    ezdic.plot_engineering_strain(sample_group_df(), path, "Engineering strain - G01", preset_name="single_column")
+
+    text = path.read_text(encoding="utf-8")
+    assert "<svg" in text
+    assert "Engineering strain" in text
+
+    eps_path = tmp_path / "engineering_strain_G01.eps"
+    ezdic.plot_engineering_strain(sample_group_df(), eps_path, "Engineering strain - G01", preset_name="single_column")
+    assert eps_path.exists()
+    assert eps_path.stat().st_size > 0
+
+
+def test_plot_presets_include_colorbar_style_controls():
+    required_keys = {
+        "colorbar_label_size",
+        "colorbar_tick_size",
+        "colorbar_fraction",
+        "colorbar_pad",
+    }
+
+    for name, preset in ezdic.PLOT_EXPORT_PRESETS.items():
+        missing = required_keys - set(preset)
+        assert not missing, f"{name} missing colorbar preset keys: {sorted(missing)}"
+
+
+def test_publication_bitmap_exports_keep_submission_dpi_metadata(tmp_path):
+    for suffix in [".png", ".tiff"]:
+        path = tmp_path / f"engineering_strain_G01{suffix}"
+
+        ezdic.plot_engineering_strain(sample_group_df(), path, "Engineering strain - G01", preset_name="publication")
+
+        with Image.open(path) as image:
+            dpi = image.info.get("dpi") or image.info.get("resolution")
+        assert dpi is not None
+        assert dpi[0] >= 590
+        assert dpi[1] >= 590
+
+
+def test_save_plot_figure_uses_tight_bbox_with_small_padding(monkeypatch, tmp_path):
+    fig, _ax, _preset = ezdic.create_plot_figure("publication")
+    captured = {}
+
+    def fake_savefig(path, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(fig, "savefig", fake_savefig)
+
+    ezdic.save_plot_figure(fig, tmp_path / "figure.png", preset_name="publication")
+
+    assert captured["dpi"] == ezdic.PLOT_EXPORT_PRESETS["publication"]["dpi"]
+    assert captured["bbox_inches"] == "tight"
+    assert captured["facecolor"] == "white"
+    assert 0 < captured["pad_inches"] <= 0.08
 
 
 def test_build_mean_strain_table_groups_by_role_and_mode_and_counts_valid_groups():
