@@ -120,6 +120,43 @@ def actual_font_size(root, font_spec):
     return abs(tkfont.Font(root=root, font=font_spec).actual("size"))
 
 
+def assert_widget_fully_visible_in(container, widget, *, min_width=20, min_height=10):
+    assert widget.winfo_ismapped(), f"{widget} should be mapped"
+    assert widget.winfo_width() >= min_width
+    assert widget.winfo_height() >= min_height
+
+    c_x0 = container.winfo_rootx()
+    c_y0 = container.winfo_rooty()
+    c_x1 = c_x0 + container.winfo_width()
+    c_y1 = c_y0 + container.winfo_height()
+
+    w_x0 = widget.winfo_rootx()
+    w_y0 = widget.winfo_rooty()
+    w_x1 = w_x0 + widget.winfo_width()
+    w_y1 = w_y0 + widget.winfo_height()
+
+    assert c_x0 <= w_x0 < c_x1
+    assert c_y0 <= w_y0 < c_y1
+    assert w_x1 <= c_x1
+    assert w_y1 <= c_y1
+
+
+def scroll_workflow_widget_into_view(root, app, widget):
+    root.update()
+    root.update_idletasks()
+    bbox = app.controls_canvas.bbox("all")
+    if not bbox:
+        return
+    content_height = max(bbox[3] - bbox[1], 1)
+    visible_height = max(app.controls_canvas.winfo_height(), 1)
+    widget_y = widget.winfo_rooty() - app.controls_panel.winfo_rooty()
+    target_y = max(widget_y - 24, 0)
+    fraction = 0.0 if content_height <= visible_height else target_y / content_height
+    app.controls_canvas.yview_moveto(min(max(fraction, 0.0), 1.0))
+    root.update()
+    root.update_idletasks()
+
+
 def test_gui_preserves_platform_dpi_scaling(gui_app):
     root, app = gui_app
     app_scaling = float(root.tk.call("tk", "scaling"))
@@ -225,6 +262,9 @@ def test_gui_layout_fits_research_laptop_viewport(gui_app):
     root.geometry("1366x768+0+0")
     root.update()
     root.update_idletasks()
+    app.controls_canvas.yview_moveto(0)
+    root.update()
+    root.update_idletasks()
 
     min_w, min_h = root.minsize()
     assert min_w <= 1366
@@ -243,7 +283,7 @@ def test_gui_layout_fits_research_laptop_viewport(gui_app):
     root_h = root.winfo_height()
     root_x = root.winfo_rootx()
     root_y = root.winfo_rooty()
-    for widget in [app.canvas, app.group_tree, app.start_button, app.progress, app.log_text]:
+    for widget in [app.canvas, app.controls_canvas, app.measure_frame]:
         assert widget.winfo_width() > 20
         assert widget.winfo_height() > 10
         x0 = widget.winfo_rootx() - root_x
@@ -254,6 +294,11 @@ def test_gui_layout_fits_research_laptop_viewport(gui_app):
         assert 0 <= y0 < root_h
         assert x1 <= root_w
         assert y1 <= root_h
+
+    assert app.controls_panel.winfo_reqheight() > app.controls_canvas.winfo_height()
+    for widget in [app.group_tree, app.start_button, app.progress, app.log_text]:
+        scroll_workflow_widget_into_view(root, app, widget)
+        assert_widget_fully_visible_in(app.controls_canvas, widget)
     root.withdraw()
 
 
@@ -263,13 +308,11 @@ def test_export_preset_buttons_fit_research_laptop_viewport(gui_app):
     root.geometry("1366x768+0+0")
     root.update()
     root.update_idletasks()
+    app.controls_canvas.yview_moveto(0)
+    root.update()
+    root.update_idletasks()
 
     assert app.export_preset_label.cget("text") == "导出预设："
-
-    root_w = root.winfo_width()
-    root_h = root.winfo_height()
-    root_x = root.winfo_rootx()
-    root_y = root.winfo_rooty()
 
     for widget in [
         app.export_preset_label,
@@ -277,16 +320,122 @@ def test_export_preset_buttons_fit_research_laptop_viewport(gui_app):
         app.export_quick_preset_button,
         app.export_all_preset_button,
     ]:
-        assert widget.winfo_width() > 20
-        assert widget.winfo_height() > 10
-        x0 = widget.winfo_rootx() - root_x
-        y0 = widget.winfo_rooty() - root_y
-        x1 = x0 + widget.winfo_width()
-        y1 = y0 + widget.winfo_height()
-        assert 0 <= x0 < root_w
-        assert 0 <= y0 < root_h
-        assert x1 <= root_w
-        assert y1 <= root_h
+        scroll_workflow_widget_into_view(root, app, widget)
+        assert_widget_fully_visible_in(app.controls_canvas, widget)
+
+    root.withdraw()
+
+
+def test_measurement_settings_are_primary_and_visible_on_laptop_viewport(gui_app):
+    root, app = gui_app
+    root.deiconify()
+    root.geometry("1366x768+0+0")
+    root.update()
+    root.update_idletasks()
+    app.controls_canvas.yview_moveto(0)
+    root.update()
+    root.update_idletasks()
+
+    assert getattr(app, "measure_frame", None) is not None
+    assert getattr(app, "workflow_canvas", None) is app.controls_canvas
+    assert getattr(app, "workflow_panel", None) is app.controls_panel
+    assert app.controls_canvas.winfo_height() >= 500
+    assert app.measure_frame.winfo_height() >= 220
+
+    for widget in [
+        app.measure_frame,
+        app.preview_frame_entry,
+        app.start_frame_entry,
+        app.end_frame_entry,
+        app.strain_mode_box,
+        app.tracking_preset_box,
+        app.pixel_size_entry,
+        app.auto_align_roi2_check,
+        app.advanced_toggle_btn,
+    ]:
+        assert_widget_fully_visible_in(app.controls_canvas, widget)
+
+    root.withdraw()
+
+
+def test_minimum_view_keeps_measurement_panel_and_image_canvas_useful(gui_app):
+    root, app = gui_app
+    root.deiconify()
+    root.geometry("1120x740+0+0")
+    root.update()
+    root.update_idletasks()
+    app.controls_canvas.yview_moveto(0)
+    root.update()
+    root.update_idletasks()
+
+    assert app.canvas.winfo_width() >= 560
+    assert app.canvas.winfo_height() >= 360
+    assert_widget_fully_visible_in(app.controls_canvas, app.measure_frame)
+    assert_widget_fully_visible_in(app.controls_canvas, app.strain_mode_box)
+    assert_widget_fully_visible_in(app.controls_canvas, app.tracking_preset_box)
+    assert_widget_fully_visible_in(app.controls_canvas, app.advanced_toggle_btn)
+
+    root.withdraw()
+
+
+def test_expanded_advanced_settings_scroll_without_hiding_base_measurement_controls(gui_app):
+    root, app = gui_app
+    root.deiconify()
+    root.geometry("1366x768+0+0")
+    try:
+        if not app.advanced_visible.get():
+            app.toggle_advanced_settings()
+        root.update()
+        root.update_idletasks()
+        app.controls_canvas.yview_moveto(0)
+        root.update()
+        root.update_idletasks()
+
+        assert app.advanced_visible.get() is True
+        assert app.advanced_frame.winfo_ismapped()
+        assert app.controls_panel.winfo_reqheight() > app.controls_canvas.winfo_height()
+        assert app.advanced_frame.winfo_width() <= app.controls_canvas.winfo_width()
+
+        for widget in [
+            app.preview_frame_entry,
+            app.start_frame_entry,
+            app.end_frame_entry,
+            app.strain_mode_box,
+            app.tracking_preset_box,
+        ]:
+            assert_widget_fully_visible_in(app.controls_canvas, widget)
+    finally:
+        if app.advanced_visible.get():
+            app.toggle_advanced_settings()
+        root.withdraw()
+
+
+def test_workflow_panel_supports_mouse_wheel_scrolling(gui_app, monkeypatch):
+    root, app = gui_app
+    root.deiconify()
+    root.geometry("1366x768+0+0")
+    root.update()
+    root.update_idletasks()
+
+    assert app.controls_canvas.bind("<MouseWheel>")
+    assert app.controls_canvas.bind("<Button-4>")
+    assert app.controls_canvas.bind("<Button-5>")
+    assert app.controls_panel.bind("<MouseWheel>")
+
+    calls = []
+
+    def fake_scroll(amount, unit):
+        calls.append((amount, unit))
+
+    monkeypatch.setattr(app.controls_canvas, "yview_scroll", fake_scroll)
+
+    wheel_down = type("Event", (), {"delta": -120, "num": 0})()
+    assert app._on_workflow_mouse_wheel(wheel_down) == "break"
+    assert calls[-1] == (1, "units")
+
+    wheel_up = type("Event", (), {"delta": 0, "num": 4})()
+    assert app._on_workflow_mouse_wheel(wheel_up) == "break"
+    assert calls[-1] == (-1, "units")
 
     root.withdraw()
 
