@@ -32,6 +32,7 @@ import os
 import re
 import math
 import glob
+import json
 import queue
 import threading
 import traceback
@@ -1420,6 +1421,8 @@ UI_VIEWER_TITLE_FONT_SIZE = 11
 UI_MIN_TK_SCALING = 1.20
 UI_MAX_TK_SCALING = 2.50
 UI_SCALE_ENV_VAR = "EZDIC_UI_SCALE"
+RECENT_CONFIG_ENV_VAR = "EZDIC_RECENT_CONFIG"
+RECENT_CONFIG_FILENAME = "recent_paths.json"
 
 
 def enable_windows_dpi_awareness():
@@ -1539,6 +1542,15 @@ class MultiROIGUI:
         self.viewer_figure = None
         self.viewer_canvas = None
         self.viewer_toolbar = None
+        self.last_qc_summary = None
+
+        self.preflight_summary_var = tk.StringVar(value="")
+        self.current_roi_summary_var = tk.StringVar(value="尚未绘制 ROI。")
+        self.qc_overview_var = tk.StringVar(value="分析完成后显示 QC 总览。")
+        self.recent_image_dir = ""
+        self.recent_output_dir = ""
+        self._recent_config_path = self.default_recent_config_path()
+        self.load_recent_paths()
 
         for var in [
             self.search_radius,
@@ -1553,8 +1565,18 @@ class MultiROIGUI:
         ]:
             var.trace_add("write", self.mark_tracking_custom)
 
+        for var in [
+            self.start_frame_1based,
+            self.end_frame_1based,
+            self.strain_mode,
+            self.roi_role,
+            *self._export_option_vars(),
+        ]:
+            var.trace_add("write", self._on_gui_state_change)
+
         self.configure_ui_style()
         self.build_ui()
+        self.bind_common_shortcuts()
         self.configure_final_window_limits()
         self.start_ui_queue_polling()
 
@@ -1615,6 +1637,278 @@ class MultiROIGUI:
     def add_tooltip(self, widget, text):
         self.tooltips.append(ToolTip(widget, text))
         return widget
+
+    def _on_gui_state_change(self, *args):
+        try:
+            self.update_workflow_action_states()
+        except Exception:
+            pass
+
+    def bind_common_shortcuts(self):
+        self.root.bind("<Control-l>", lambda _event: self.load_first_image() or "break")
+        self.root.bind("<Control-f>", lambda _event: self.fit_image_to_view() or "break")
+        self.root.bind("<Control-Return>", lambda _event: self.start_processing() or "break")
+        self.root.bind("<Escape>", lambda _event: self.clear_current_rois() or "break")
+
+    def default_recent_config_path(self):
+        configured = os.environ.get(RECENT_CONFIG_ENV_VAR)
+        if configured:
+            return Path(configured)
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else Path.home() / ".ezdic"
+        return base / "ezDIC" / RECENT_CONFIG_FILENAME
+
+    def load_recent_paths(self):
+        try:
+            path = Path(self._recent_config_path)
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        image_dir = str(data.get("image_dir", "") or "")
+        output_dir = str(data.get("output_dir", "") or "")
+        self.recent_image_dir = image_dir
+        self.recent_output_dir = output_dir
+        if image_dir and not self.image_folder.get().strip():
+            self.image_folder.set(image_dir)
+        if output_dir and not self.output_folder.get().strip():
+            self.output_folder.set(output_dir)
+
+    def save_recent_paths(self):
+        try:
+            path = Path(self._recent_config_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "image_dir": self.recent_image_dir,
+                "output_dir": self.recent_output_dir,
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def remember_recent_paths(self, image_dir=None, output_dir=None):
+        if image_dir:
+            self.recent_image_dir = str(image_dir)
+        if output_dir:
+            self.recent_output_dir = str(output_dir)
+        self.save_recent_paths()
+        self.update_recent_output_button_state()
+
+    def update_recent_output_button_state(self):
+        if not hasattr(self, "open_recent_output_button"):
+            return
+        state = tk.NORMAL if self.recent_output_dir else tk.DISABLED
+        self.open_recent_output_button.config(state=state)
+
+    def open_recent_output_folder(self):
+        if not self.recent_output_dir:
+            messagebox.showinfo("无最近输出", "当前还没有可打开的最近输出目录。")
+            return
+        try:
+            open_output_folder(self.recent_output_dir)
+        except Exception as exc:
+            messagebox.showerror("无法打开输出目录", str(exc))
+            self.log(f"无法打开最近输出目录：{exc}")
+
+    def _export_option_vars(self):
+        return [
+            self.export_origin_txt,
+            self.export_origin_opju,
+            self.export_engineering_png,
+            self.export_publication_figures,
+            self.export_qc_summary,
+            self.export_full_csv,
+            self.export_corr_plot,
+            self.export_overlays,
+            self.export_parameters,
+        ]
+
+    def has_any_export_option(self):
+        return any(bool(var.get()) for var in self._export_option_vars())
+
+    def _preflight_item(self, level, label, message):
+        return {"level": level, "label": label, "message": message}
+
+    def _safe_int_var(self, var):
+        try:
+            return int(var.get()), None
+        except (tk.TclError, TypeError, ValueError) as exc:
+            return None, exc
+
+    def build_preflight_items(self, update_display=True):
+        items = []
+        has_sequence = bool(self.image_paths) and self.first_img8 is not None
+        frame_count = len(self.image_paths)
+
+        if has_sequence:
+            items.append(self._preflight_item("ok", "图像序列", f"已加载 {frame_count} 帧。"))
+        else:
+            items.append(self._preflight_item("block", "图像序列", "请先加载图像序列。"))
+
+        start, start_err = self._safe_int_var(self.start_frame_1based)
+        end, end_err = self._safe_int_var(self.end_frame_1based)
+        if start_err or end_err:
+            items.append(self._preflight_item("block", "分析范围", "起始帧和结束帧必须是整数。"))
+        elif has_sequence and (start < 1 or end < 1 or start > frame_count or end > frame_count):
+            items.append(self._preflight_item("block", "分析范围", f"范围必须位于 1 到 {frame_count} 帧之间。"))
+        elif start is not None and end is not None and end <= start:
+            items.append(self._preflight_item("block", "分析范围", "至少需要两帧：结束帧必须大于起始帧。"))
+        elif start is not None and end is not None:
+            items.append(self._preflight_item("ok", "分析范围", f"第 {start} 到 {end} 帧。"))
+
+        if self.roi_groups:
+            items.append(self._preflight_item("ok", "ROI 组", f"已添加 {len(self.roi_groups)} 组。"))
+        else:
+            items.append(self._preflight_item("block", "ROI 组", "请至少添加一组 ROI1/ROI2。"))
+
+        if self.roi_groups and start is not None:
+            mismatched = [
+                g["name"]
+                for g in self.roi_groups
+                if g.get("reference_frame_1based") is not None and int(g.get("reference_frame_1based")) != start
+            ]
+            if mismatched:
+                items.append(
+                    self._preflight_item(
+                        "block",
+                        "参考帧",
+                        f"ROI 组 {', '.join(mismatched)} 不是在当前起始/参考帧上定义的，请载入后重画或恢复参考帧。",
+                    )
+                )
+            else:
+                items.append(self._preflight_item("ok", "参考帧", "ROI 组与当前起始/参考帧一致。"))
+
+        if self.roi_groups:
+            invalid_l0 = [g["name"] for g in self.roi_groups if g.get("L0", 0) <= 0 or not np.isfinite(float(g.get("L0", np.nan)))]
+            small_l0 = [g for g in self.roi_groups if g.get("L0", 0) > 0 and g.get("L0", 0) < 50]
+            if invalid_l0:
+                items.append(self._preflight_item("block", "L0", f"ROI 组 {', '.join(invalid_l0)} 的 L0 无效。"))
+            elif small_l0:
+                detail = ", ".join(f"{g['name']}={g['L0']:.1f}px" for g in small_l0)
+                items.append(self._preflight_item("warn", "L0", f"L0 偏小：{detail}；应变噪声会被放大。"))
+            else:
+                min_l0 = min(float(g["L0"]) for g in self.roi_groups)
+                items.append(self._preflight_item("ok", "L0", f"最小 L0={min_l0:.1f} px。"))
+
+            actual_modes = sorted({str(g.get("actual_mode", "unknown")) for g in self.roi_groups})
+            if "distance" in actual_modes:
+                items.append(self._preflight_item("warn", "应变方向", "存在 distance 方向；请确认倾斜标距的物理意义。"))
+            else:
+                items.append(self._preflight_item("ok", "应变方向", "方向已解析为 " + ", ".join(actual_modes) + "。"))
+
+        try:
+            poisson_enabled = validate_poisson_role_groups(self.roi_groups)
+        except RuntimeError as exc:
+            items.append(self._preflight_item("warn", "泊松比角色", str(exc).replace("\n", " ")))
+        else:
+            if poisson_enabled:
+                axial, transverse = get_poisson_role_groups(self.roi_groups)
+                if axial and transverse and axial[0].get("actual_mode") == transverse[0].get("actual_mode"):
+                    items.append(self._preflight_item("warn", "泊松比角色", "轴向和横向组的 actual_mode 相同，请复核方向。"))
+                else:
+                    items.append(self._preflight_item("ok", "泊松比角色", "轴向/横向角色已成对配置。"))
+            else:
+                items.append(self._preflight_item("ok", "泊松比角色", "未启用泊松比导出角色。"))
+
+        output_text = self.output_folder.get().strip()
+        if not output_text:
+            items.append(self._preflight_item("block", "输出目录", "请设置输出文件夹。"))
+        else:
+            output_path = Path(output_text)
+            if output_path.exists() and not output_path.is_dir():
+                items.append(self._preflight_item("block", "输出目录", "输出路径已存在但不是文件夹。"))
+            else:
+                items.append(self._preflight_item("ok", "输出目录", str(output_path)))
+
+        if self.has_any_export_option():
+            items.append(self._preflight_item("ok", "导出选项", "至少已选择一种导出内容。"))
+        else:
+            items.append(self._preflight_item("block", "导出选项", "请至少选择一种导出内容。"))
+
+        if update_display and hasattr(self, "preflight_summary_var"):
+            self.preflight_summary_var.set(self.format_preflight_items(items))
+        return items
+
+    def format_preflight_items(self, items):
+        prefix = {"ok": "通过", "warn": "警告", "block": "阻止"}
+        return "\n".join(f"[{prefix.get(item['level'], item['level'])}] {item['label']}：{item['message']}" for item in items)
+
+    def refresh_preflight_panel(self):
+        return self.build_preflight_items(update_display=True)
+
+    def _roi_texture_status_text(self, rect):
+        if self.first_img8 is None or rect is None:
+            return "未检查"
+        metrics = roi_texture_metrics(self.first_img8, rect)
+        ok = texture_is_ok(
+            metrics,
+            self.min_texture_std.get(),
+            self.min_texture_contrast.get(),
+            self.max_saturated_frac.get(),
+        )
+        status = "良好" if ok else "偏弱"
+        return f"{status}(std={metrics['std_gray']:.1f}, P95-P5={metrics['contrast_p95_p5']:.1f})"
+
+    def build_current_roi_summary(self):
+        if self.roi1 is None and self.roi2 is None:
+            return "尚未绘制 ROI。请在参考帧上依次绘制 ROI1 和 ROI2。"
+        if self.roi1 is None:
+            return "ROI1 未绘制；请先绘制 ROI1。"
+        if self.roi2 is None:
+            _, _, w, h = self.roi1
+            return f"ROI1 {w}×{h} px；ROI2 未绘制；ROI1 纹理：{self._roi_texture_status_text(self.roi1)}。"
+
+        _, _, w1, h1 = self.roi1
+        _, _, w2, h2 = self.roi2
+        actual_mode = resolve_strain_mode(self.roi1, self.roi2, self.strain_mode.get())
+        dx, dy, dist = roi_separation(self.roi1, self.roi2)
+        l0 = length_between(self.roi1, self.roi2, actual_mode)
+        return (
+            f"ROI1 {w1}×{h1} px；ROI2 {w2}×{h2} px；"
+            f"dx={dx:.1f} px, dy={dy:.1f} px, distance={dist:.1f} px, L0={l0:.1f} px；"
+            f"方向={actual_mode}；纹理：ROI1 {self._roi_texture_status_text(self.roi1)}，"
+            f"ROI2 {self._roi_texture_status_text(self.roi2)}。"
+        )
+
+    def refresh_current_roi_summary(self):
+        if hasattr(self, "current_roi_summary_var"):
+            self.current_roi_summary_var.set(self.build_current_roi_summary())
+
+    def format_qc_overview(self, summary):
+        if not summary or not summary.get("groups"):
+            return "分析完成后显示 QC 总览。"
+
+        groups = summary["groups"]
+        total_frames = int(sum(item["frames"] for item in groups.values()))
+        rejected = int(summary["overall"].get("rejected_frames", 0))
+        adaptive = int(summary["overall"].get("adaptive_accepted_frames", 0))
+        rejected_ratio = rejected / total_frames if total_frames else 0.0
+        levels = {"Good": 0, "Warning": 1, "Poor": 2}
+
+        def group_key(pair):
+            _name, item = pair
+            ratio = item["rejected_frames"] / item["frames"] if item["frames"] else 0.0
+            return levels.get(item["qc_level"], 0), ratio, item["adaptive_accepted_frames"]
+
+        worst_name, worst = max(groups.items(), key=group_key)
+        review_frames = sorted({int(frame) for frame in worst.get("rejected_frame_list", [])})
+        review_text = ", ".join(str(frame) for frame in review_frames[:12]) if review_frames else "无"
+        if len(review_frames) > 12:
+            review_text += " ..."
+
+        return (
+            f"QC 总览：{summary['overall']['qc_level']}；ROI 组={summary['overall']['groups']}；"
+            f"拒绝帧比例={rejected}/{total_frames} ({rejected_ratio:.1%})；自适应接受={adaptive}。\n"
+            f"最需复核：{worst_name}（{worst['qc_level']}，拒绝 {worst['rejected_frames']}/{worst['frames']}）。\n"
+            f"建议复核帧：{review_text}。"
+        )
+
+    def update_qc_overview(self, summary):
+        self.last_qc_summary = summary
+        if hasattr(self, "qc_overview_var"):
+            self.qc_overview_var.set(self.format_qc_overview(summary))
 
     def get_int_setting(self, var, label):
         try:
@@ -2243,8 +2537,24 @@ class MultiROIGUI:
             "适合上下分开的标距；如果实际标距不是垂直的，强制对齐会改变物理测量方向。",
         )
 
+        roi_summary_frame = ttk.LabelFrame(group_frame, text="当前 ROI 安全摘要", padding=(8, 6))
+        roi_summary_frame.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        roi_summary_frame.columnconfigure(0, weight=1)
+        self.current_roi_summary_label = ttk.Label(
+            roi_summary_frame,
+            textvariable=self.current_roi_summary_var,
+            style="Hint.TLabel",
+            justify=tk.LEFT,
+            wraplength=430,
+        )
+        self.current_roi_summary_label.grid(row=0, column=0, sticky="ew")
+        self.add_tooltip(
+            self.current_roi_summary_label,
+            "汇总当前正在编辑的 ROI 尺寸、中心距、L0、实际应变方向和纹理质量；用于在添加 ROI 组前发现低纹理、小 L0 或方向错误。",
+        )
+
         form_row = ttk.Frame(group_frame, style="Card.TFrame")
-        form_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        form_row.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         group_name_tip = (
             "给当前 ROI 组命名，留空会自动使用 G01、G02 等名称。"
             "建议用样品位置或重复编号命名，避免多个 ROI 组导出后难以追溯。"
@@ -2281,7 +2591,7 @@ class MultiROIGUI:
         )
 
         action_row = ttk.Frame(group_frame, style="Card.TFrame")
-        action_row.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        action_row.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         self.update_group_button = ttk.Button(action_row, text="更新选中组", command=self.update_selected_group, style="Compact.TButton")
         self.update_group_button.grid(row=0, column=0, padx=(0, 6), pady=2, sticky="w")
         self.add_tooltip(
@@ -2312,7 +2622,7 @@ class MultiROIGUI:
         )
 
         tree_frame = ttk.Frame(group_frame, style="Card.TFrame")
-        tree_frame.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        tree_frame.grid(row=4, column=0, sticky="ew", pady=(6, 0))
         tree_frame.columnconfigure(0, weight=1)
         columns = ("name", "role", "selected", "actual", "L0", "dx", "dy", "roi1", "roi2")
         # 保留水平滚动，首屏优先显示按钮和图像，不让列表请求宽度撑爆窗口。
@@ -2441,8 +2751,24 @@ class MultiROIGUI:
             "这是开始分析前的重点检查区。若不确定方向或 ROI 质量，先导出 QC 摘要、相关系数曲线或 overlay 图片进行复核。",
         )
 
+        preflight_frame = ttk.LabelFrame(self.analysis_frame, text="运行前检查", padding=(8, 6))
+        preflight_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        preflight_frame.columnconfigure(0, weight=1)
+        self.preflight_summary_label = ttk.Label(
+            preflight_frame,
+            textvariable=self.preflight_summary_var,
+            style="Hint.TLabel",
+            justify=tk.LEFT,
+            wraplength=430,
+        )
+        self.preflight_summary_label.grid(row=0, column=0, sticky="ew")
+        self.add_tooltip(
+            self.preflight_summary_label,
+            "逐项检查图像序列、分析范围、ROI 组、参考帧、L0、方向、泊松比角色、输出目录和导出选项。阻止项会禁用开始按钮；警告项需要科研判断后再继续。",
+        )
+
         export_frame = ttk.LabelFrame(self.analysis_frame, text="导出内容", padding=(10, 8))
-        export_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        export_frame.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         export_frame.columnconfigure(0, weight=1)
         export_frame.columnconfigure(1, weight=1)
         export_frame.columnconfigure(2, weight=1)
@@ -2551,7 +2877,7 @@ class MultiROIGUI:
             self.export_checkbuttons.append(checkbutton)
 
         status_frame = ttk.LabelFrame(self.analysis_frame, text="运行状态", padding=(8, 4))
-        status_frame.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        status_frame.grid(row=4, column=0, sticky="ew", pady=(0, 6))
         status_frame.columnconfigure(0, weight=1)
         self.progress = ttk.Progressbar(status_frame, orient=tk.HORIZONTAL, mode="determinate")
         self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 3))
@@ -2581,6 +2907,19 @@ class MultiROIGUI:
         )
         self.log_text.grid(row=2, column=0, sticky="ew")
 
+        self.qc_overview_label = ttk.Label(
+            status_frame,
+            textvariable=self.qc_overview_var,
+            style="Hint.TLabel",
+            justify=tk.LEFT,
+            wraplength=430,
+        )
+        self.qc_overview_label.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        self.add_tooltip(
+            self.qc_overview_label,
+            "分析完成后显示总体 QC 等级、拒绝帧比例、自适应接受帧数、最需复核的 ROI 组和建议复核帧；Poor 不应直接作为可靠科研结论使用。",
+        )
+
         # 给日志和预览器合理的垂直分配，避免互相遮挡
         # row 4 (log) 给较大权重，row 5 (viewer) 给固定合理高度，防止整体窗口被撑爆
         self.analysis_frame.rowconfigure(4, weight=0)
@@ -2588,7 +2927,7 @@ class MultiROIGUI:
 
         # === Tier 0: In-app results viewer (collapsible) ===
         self.viewer_frame = ttk.LabelFrame(self.analysis_frame, text="结果曲线预览（分析完成后显示，可交互）", padding=(8, 6))
-        self.viewer_frame.grid(row=5, column=0, sticky="ew", pady=(6, 0))
+        self.viewer_frame.grid(row=6, column=0, sticky="ew", pady=(6, 0))
         self.viewer_frame.columnconfigure(0, weight=1)
 
         self.viewer_placeholder = ttk.Label(
@@ -2639,7 +2978,7 @@ class MultiROIGUI:
 
         # Move notice down one row
         notice_frame = ttk.Frame(self.analysis_frame, style="Card.TFrame")
-        notice_frame.grid(row=6, column=0, sticky="ew", pady=(4, 0))
+        notice_frame.grid(row=7, column=0, sticky="ew", pady=(4, 0))
         notice_frame.columnconfigure(0, weight=1)
         ttk.Label(
             notice_frame,
@@ -2670,6 +3009,19 @@ class MultiROIGUI:
         )
         self.dark_mode_btn.grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(4, 0))
         self.add_tooltip(self.dark_mode_btn, "切换暗色/浅色界面（实验室长时间使用更护眼）。")
+
+        self.open_recent_output_button = ttk.Button(
+            notice_frame,
+            text="打开最近输出",
+            command=self.open_recent_output_folder,
+            style="Compact.TButton",
+            state=tk.NORMAL if self.recent_output_dir else tk.DISABLED,
+        )
+        self.open_recent_output_button.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.add_tooltip(
+            self.open_recent_output_button,
+            "打开上一次成功分析或手动选择过的输出目录，方便回看 core、qc 和 optional 结果文件；没有最近目录时不可用。",
+        )
 
     def sync_strain_mode_from_display(self, event=None):
         label = self.strain_mode_display.get()
@@ -2748,6 +3100,10 @@ class MultiROIGUI:
 
     def show_completion_and_open_output_folder(self, done_msg, output_dir):
         messagebox.showinfo("完成", done_msg)
+        self.remember_recent_paths(
+            image_dir=self.image_folder.get().strip() or None,
+            output_dir=output_dir,
+        )
         try:
             open_output_folder(output_dir)
         except Exception as exc:
@@ -2763,18 +3119,21 @@ class MultiROIGUI:
         self.next_group_idx = 1
         self.group_name_var.set("")
         self.refresh_group_tree()
+        self.refresh_current_roi_summary()
 
     def select_image_folder(self):
         folder = filedialog.askdirectory(title="选择 TIF 图片文件夹")
         if folder:
             self.image_folder.set(folder)
             self.output_folder.set(os.path.join(folder, "virtual_extensometer_output_v7_multi_roi_range"))
+            self.remember_recent_paths(image_dir=folder, output_dir=self.output_folder.get())
             self.log(f"图像文件夹：{folder}")
 
     def select_output_folder(self):
         folder = filedialog.askdirectory(title="选择输出文件夹")
         if folder:
             self.output_folder.set(folder)
+            self.remember_recent_paths(output_dir=folder)
             self.log(f"输出文件夹：{folder}")
 
     def load_first_image(self):
@@ -2826,6 +3185,7 @@ class MultiROIGUI:
             self.show_image()
             self.log(f"找到 {n} 张图像。")
             self.log(f"当前预览：第 {self.current_preview_index + 1} 帧 / 共 {n} 帧")
+            self.remember_recent_paths(image_dir=folder, output_dir=self.output_folder.get().strip() or None)
             self.update_workflow_action_states()
         except Exception as exc:
             self.image_paths = old_state["image_paths"]
@@ -3136,9 +3496,13 @@ class MultiROIGUI:
         has_groups = bool(self.roi_groups)
         has_current_roi = self.roi1 is not None or self.roi2 is not None
         is_processing = getattr(self, "is_processing", False)
+        preflight_items = self.refresh_preflight_panel() if hasattr(self, "preflight_summary_var") else []
+        blocking_items = [item for item in preflight_items if item["level"] == "block"]
+        warning_items = [item for item in preflight_items if item["level"] == "warn"]
+        self.refresh_current_roi_summary()
 
         if hasattr(self, "start_button"):
-            can_start = has_sequence and has_groups and not is_processing
+            can_start = has_sequence and has_groups and not blocking_items and not is_processing
             self.start_button.config(state=tk.NORMAL if can_start else tk.DISABLED)
 
         if hasattr(self, "clear_rois_button"):
@@ -3153,10 +3517,15 @@ class MultiROIGUI:
         if hasattr(self, "workflow_hint_var"):
             if is_processing:
                 hint = "正在处理：请等待当前分析完成，完成后会提示输出位置。"
+            elif blocking_items:
+                first = blocking_items[0]
+                hint = f"下一步：处理“{first['label']}”阻止项：{first['message']}"
             elif not has_sequence:
                 hint = "下一步：选择图像文件夹并点击“加载/刷新序列”。"
             elif not has_groups:
                 hint = "下一步：在参考帧画 ROI1/ROI2，并添加为 ROI 组。"
+            elif warning_items:
+                hint = f"可以开始分析；但建议先复核警告项：{warning_items[0]['label']} - {warning_items[0]['message']}"
             else:
                 hint = "可以开始分析；开始前请确认参考帧、ROI 方向和导出内容。"
             self.workflow_hint_var.set(hint)
@@ -3231,6 +3600,11 @@ class MultiROIGUI:
         self.log(f"切换到绘制 ROI {idx}")
 
     def clear_current_rois(self):
+        if getattr(self, "is_processing", False):
+            self.status_var.set("正在处理：请等待当前任务完成后再清除 ROI。")
+            self.log("正在处理，已忽略清除当前 ROI 请求。")
+            return
+
         if self.roi1 is None and self.roi2 is None:
             self.status_var.set("当前没有正在编辑的 ROI。")
             self.log("当前没有正在编辑的 ROI，无需清除。")
@@ -3449,6 +3823,7 @@ class MultiROIGUI:
             "dy0": dy,
             "dist0": dist,
             "L0": L0,
+            "reference_frame_1based": current_1based,
         }
 
         return group
@@ -4447,6 +4822,7 @@ class MultiROIGUI:
 
         self.post_to_ui(lambda: self.progress.config(value=100))
         self.post_to_ui(lambda: self.status_var.set(f"处理完成，QC 状态：{qc_level}"))
+        self.post_to_ui(lambda s=summary: self.update_qc_overview(s))
         self.post_to_ui(lambda: self.log(done_msg + "\n" + path_log))
         self.post_to_ui(lambda: self.show_completion_and_open_output_folder(done_msg, output_dir))
 

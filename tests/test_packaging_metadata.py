@@ -20,9 +20,12 @@ DOI_URL = f"https://doi.org/{DOI}"
 
 
 @pytest.fixture(scope="module")
-def gui_app():
+def gui_app(tmp_path_factory):
     import tkinter as tk
 
+    old_recent_config = os.environ.get("EZDIC_RECENT_CONFIG")
+    recent_config = tmp_path_factory.mktemp("ezdic_gui_state") / "recent_paths.json"
+    os.environ["EZDIC_RECENT_CONFIG"] = str(recent_config)
     root = tk.Tk()
     root.withdraw()
     try:
@@ -31,6 +34,10 @@ def gui_app():
         yield root, app
     finally:
         root.destroy()
+        if old_recent_config is None:
+            os.environ.pop("EZDIC_RECENT_CONFIG", None)
+        else:
+            os.environ["EZDIC_RECENT_CONFIG"] = old_recent_config
 
 
 def write_test_image(path, value=120, shape=(100, 140)):
@@ -662,6 +669,136 @@ def test_start_analysis_button_reflects_workflow_readiness(gui_app, tmp_path, mo
     assert "开始分析" in app.workflow_hint_var.get()
 
 
+def test_preflight_panel_blocks_missing_inputs_and_export_options(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+
+    initial_items = app.build_preflight_items()
+    assert any(item["level"] == "block" and item["label"] == "图像序列" for item in initial_items)
+    assert "图像序列" in app.preflight_summary_var.get()
+    assert str(app.start_button.cget("state")) == "disabled"
+
+    load_two_frame_sequence(app, tmp_path / "images_preflight", tmp_path / "out_preflight")
+    loaded_items = app.build_preflight_items()
+    assert any(item["level"] == "block" and item["label"] == "ROI 组" for item in loaded_items)
+    assert "ROI 组" in app.preflight_summary_var.get()
+
+    add_basic_roi_group(app)
+    assert str(app.start_button.cget("state")) == "normal"
+
+    for var in [
+        app.export_origin_txt,
+        app.export_origin_opju,
+        app.export_engineering_png,
+        app.export_publication_figures,
+        app.export_qc_summary,
+        app.export_full_csv,
+        app.export_corr_plot,
+        app.export_overlays,
+        app.export_parameters,
+    ]:
+        var.set(False)
+
+    app.update_workflow_action_states()
+    no_export_items = app.build_preflight_items()
+    assert any(item["level"] == "block" and item["label"] == "导出选项" for item in no_export_items)
+    assert str(app.start_button.cget("state")) == "disabled"
+    assert "导出选项" in app.workflow_hint_var.get()
+
+
+def test_preflight_reports_small_l0_as_warning_not_blocking(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+
+    load_two_frame_sequence(app, tmp_path / "images_small_l0", tmp_path / "out_small_l0")
+    app.roi1 = (10, 10, 20, 20)
+    app.roi2 = (40, 10, 20, 20)
+    app.strain_mode.set("x")
+    app.sync_strain_mode_display()
+    app.add_current_group()
+
+    items = app.build_preflight_items()
+    assert any(item["level"] == "warn" and item["label"] == "L0" for item in items)
+    assert str(app.start_button.cget("state")) == "normal"
+    assert "L0" in app.preflight_summary_var.get()
+
+
+def test_current_roi_summary_updates_after_roi_changes(gui_app, tmp_path):
+    _root, app = gui_app
+    reset_gui_app(app)
+    load_two_frame_sequence(app, tmp_path / "images_roi_summary", tmp_path / "out_roi_summary")
+
+    assert "尚未绘制" in app.current_roi_summary_var.get()
+
+    app.roi1 = (10, 10, 30, 30)
+    app.refresh_current_roi_summary()
+    assert "ROI1" in app.current_roi_summary_var.get()
+    assert "ROI2 未绘制" in app.current_roi_summary_var.get()
+
+    app.roi2 = (90, 10, 30, 30)
+    app.strain_mode.set("x")
+    app.sync_strain_mode_display()
+    app.refresh_current_roi_summary()
+
+    summary = app.current_roi_summary_var.get()
+    assert "ROI1 30×30 px" in summary
+    assert "ROI2 30×30 px" in summary
+    assert "L0=80.0 px" in summary
+    assert "方向=x" in summary
+    assert "纹理" in summary
+
+
+def test_qc_overview_highlights_worst_group_and_review_frames(gui_app):
+    _root, app = gui_app
+    df = pd.DataFrame(
+        {
+            "group": ["G_good", "G_good", "G_bad", "G_bad", "G_bad"],
+            "frame_global_1based": [1, 2, 1, 2, 3],
+            "engineering_strain": [0.0, 0.01, 0.0, np.nan, np.nan],
+            "accepted": [True, True, True, False, False],
+            "accept_mode": ["initial", "hard", "initial", "rejected", "rejected"],
+            "corr_score_roi1": [1.0, 0.96, 1.0, 0.2, 0.1],
+            "corr_score_roi2": [1.0, 0.95, 1.0, 0.3, 0.2],
+            "filename": ["a", "b", "c", "d", "e"],
+            "reason": ["initial", "ok", "initial", "fail", "fail"],
+        }
+    )
+
+    summary = ezdic.build_qc_summary(df)
+    app.update_qc_overview(summary)
+    text = app.qc_overview_var.get()
+
+    assert "Poor" in text
+    assert "G_bad" in text
+    assert "拒绝帧比例" in text
+    assert "建议复核帧" in text
+    assert "2, 3" in text
+
+
+def test_recent_output_button_and_shortcuts_are_available(gui_app, tmp_path, monkeypatch):
+    root, app = gui_app
+    reset_gui_app(app)
+    opened = []
+    monkeypatch.setattr(ezdic.messagebox, "showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ezdic, "open_output_folder", lambda path: opened.append(str(path)))
+    app._recent_config_path = tmp_path / "recent_paths.json"
+
+    out_dir = tmp_path / "recent_out"
+    out_dir.mkdir()
+    app.show_completion_and_open_output_folder("done", out_dir)
+
+    assert app.recent_output_dir == str(out_dir)
+    assert str(app.open_recent_output_button.cget("state")) == "normal"
+
+    app.open_recent_output_folder()
+    assert opened[-1] == str(out_dir)
+
+    for sequence in ["<Control-l>", "<Control-f>", "<Control-Return>", "<Escape>"]:
+        assert root.bind(sequence), f"{sequence} should be bound for common GUI actions"
+
+
 def test_windows_launcher_bat_invokes_source_entry_in_smoke_mode():
     launcher = ROOT / "start_ezDIC.bat"
 
@@ -882,6 +1019,30 @@ def test_clear_current_rois_requires_confirmation(gui_app, monkeypatch):
     assert app.roi2 is None
     assert prompts
     assert prompts[0][0] == "清除当前 ROI"
+
+
+def test_clear_current_rois_is_ignored_while_processing(gui_app, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    app.roi1 = (10, 10, 30, 30)
+    app.roi2 = (80, 10, 30, 30)
+    app.is_processing = True
+
+    prompts = []
+    monkeypatch.setattr(
+        ezdic.messagebox,
+        "askyesno",
+        lambda title, message: prompts.append((title, message)) or True,
+    )
+
+    try:
+        app.clear_current_rois()
+        assert app.roi1 == (10, 10, 30, 30)
+        assert app.roi2 == (80, 10, 30, 30)
+        assert prompts == []
+        assert "正在处理" in app.status_var.get()
+    finally:
+        app.is_processing = False
 
 
 def test_validate_rejects_output_path_that_is_existing_file(gui_app, tmp_path, monkeypatch):
