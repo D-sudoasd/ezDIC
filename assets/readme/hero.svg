@@ -1,27 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
   <title id="title">ezDIC</title>
-  <desc id="desc">Lightweight virtual extensometer: track two ROI markers on an image sequence and export engineering and true strain.</desc>
-  <rect width="1200" height="360" rx="28" fill="#0c1220"/>
-  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
-    <text x="56" y="72" fill="#fbbf24" font-size="18" font-weight="700" letter-spacing="2">VIRTUAL EXTENSOMETER · NOT FULL-FIELD DIC</text>
-    <text x="56" y="132" fill="#f8fafc" font-size="52" font-weight="800">ezDIC</text>
-    <text x="56" y="178" fill="#94a3b8" font-size="22">Linear strain from image sequences —</text>
-    <text x="56" y="210" fill="#94a3b8" font-size="22">two ROIs, QC, Origin-ready export.</text>
-    <text x="56" y="260" fill="#64748b" font-size="17">DOI 10.5281/zenodo.20222465 · Windows portable</text>
+  <desc id="desc">Lightweight virtual extensometer for linear strain from image sequences with QC and Origin-ready export.</desc>
+  <rect width="1200" height="360" rx="26" fill="#0B1018"/>
+  <path d="M0 54H1200M700 0V360" stroke="#1A2230"/>
+  <g transform="translate(56 42)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+    <text fill="#8A93A3" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" letter-spacing="2.2">VIRTUAL EXTENSOMETER · NOT FULL-FIELD DIC</text>
+    <text y="108" fill="#F5F3EC" font-family="Georgia,'Times New Roman',serif" font-size="72" font-weight="700" letter-spacing="-1.4">ezDIC</text>
+    <text y="158" fill="#B8C0CC" font-size="23">Linear strain from two ROI markers on an image sequence.</text>
+    <path d="M0 186H500" stroke="#2A3444"/>
+    <g transform="translate(0 220)" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">
+      <text fill="#F5F3EC">ε_eng</text>
+      <text x="84" fill="#7A8494">ε_true</text>
+      <text x="180" fill="#7A8494">QC</text>
+      <text x="236" fill="#7A8494">NaN on fail</text>
+      <text x="360" fill="#D4A84B">DOI</text>
+    </g>
+    <text y="278" fill="#5A6474" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">10.5281/zenodo.20222465 · Windows portable</text>
   </g>
-  <!-- specimen + ROI proof -->
-  <g transform="translate(640 48)">
-    <rect width="500" height="264" rx="16" fill="#111827" stroke="#334155" stroke-width="2"/>
-    <!-- dogbone silhouette -->
-    <path d="M80 40 L180 40 L200 70 L300 70 L320 40 L420 40 L420 220 L320 220 L300 190 L200 190 L180 220 L80 220 Z" fill="#1e293b" stroke="#475569" stroke-width="2"/>
-    <!-- ROI markers -->
-    <rect x="210" y="95" width="48" height="48" rx="4" fill="none" stroke="#38bdf8" stroke-width="3"/>
-    <rect x="320" y="95" width="48" height="48" rx="4" fill="none" stroke="#f472b6" stroke-width="3"/>
-    <line x1="234" y1="119" x2="344" y2="119" stroke="#a7f3d0" stroke-width="2" stroke-dasharray="6 4"/>
-    <text x="250" y="150" fill="#a7f3d0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">L</text>
-    <!-- strain curve mini -->
-    <rect x="40" y="200" width="420" height="48" rx="8" fill="#0f172a"/>
-    <polyline points="56,236 120,232 180,220 240,210 300,204 360,198 420,194" fill="none" stroke="#38bdf8" stroke-width="3"/>
-    <text x="56" y="218" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">ε eng · true · NaN on fail</text>
+  <g transform="translate(740 48)" fill="none">
+    <rect width="400" height="264" fill="#111822" stroke="#2A3444"/>
+    <!-- specimen -->
+    <path d="M70 48 L150 48 L168 78 L260 78 L278 48 L350 48 L350 220 L278 220 L260 190 L168 190 L150 220 L70 220 Z" stroke="#5A6A7E" stroke-width="1.6" fill="#161E2A"/>
+    <rect x="172" y="100" width="42" height="42" stroke="#6EC1FF" stroke-width="2.2"/>
+    <rect x="250" y="100" width="42" height="42" stroke="#E8A0C0" stroke-width="2.2"/>
+    <line x1="193" y1="121" x2="271" y2="121" stroke="#8FE3B8" stroke-width="1.6" stroke-dasharray="5 4"/>
+    <text x="218" y="148" fill="#8FE3B8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13">L</text>
+    <rect x="36" y="240" width="328" height="1" fill="#2A3444" stroke="none"/>
+    <polyline points="40,250 90,246 140,238 190,228 240,220 290,214 340,210" fill="none" stroke="#6EC1FF" stroke-width="2"/>
+    <text x="36" y="278" fill="#5A6474" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11">engineering / true strain · Origin TXT</text>
   </g>
+  <text x="1144" y="336" text-anchor="end" fill="#4A5464" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">D-sudoasd / ezDIC</text>
 </svg>
