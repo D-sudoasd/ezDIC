@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">ezDIC</title>
+  <desc id="desc">Lightweight virtual extensometer: track two ROI markers on an image sequence and export engineering and true strain.</desc>
+  <rect width="1200" height="360" rx="28" fill="#0c1220"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <text x="56" y="72" fill="#fbbf24" font-size="18" font-weight="700" letter-spacing="2">VIRTUAL EXTENSOMETER · NOT FULL-FIELD DIC</text>
+    <text x="56" y="132" fill="#f8fafc" font-size="52" font-weight="800">ezDIC</text>
+    <text x="56" y="178" fill="#94a3b8" font-size="22">Linear strain from image sequences —</text>
+    <text x="56" y="210" fill="#94a3b8" font-size="22">two ROIs, QC, Origin-ready export.</text>
+    <text x="56" y="260" fill="#64748b" font-size="17">DOI 10.5281/zenodo.20222465 · Windows portable</text>
+  </g>
+  <!-- specimen + ROI proof -->
+  <g transform="translate(640 48)">
+    <rect width="500" height="264" rx="16" fill="#111827" stroke="#334155" stroke-width="2"/>
+    <!-- dogbone silhouette -->
+    <path d="M80 40 L180 40 L200 70 L300 70 L320 40 L420 40 L420 220 L320 220 L300 190 L200 190 L180 220 L80 220 Z" fill="#1e293b" stroke="#475569" stroke-width="2"/>
+    <!-- ROI markers -->
+    <rect x="210" y="95" width="48" height="48" rx="4" fill="none" stroke="#38bdf8" stroke-width="3"/>
+    <rect x="320" y="95" width="48" height="48" rx="4" fill="none" stroke="#f472b6" stroke-width="3"/>
+    <line x1="234" y1="119" x2="344" y2="119" stroke="#a7f3d0" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="250" y="150" fill="#a7f3d0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">L</text>
+    <!-- strain curve mini -->
+    <rect x="40" y="200" width="420" height="48" rx="8" fill="#0f172a"/>
+    <polyline points="56,236 120,232 180,220 240,210 300,204 360,198 420,194" fill="none" stroke="#38bdf8" stroke-width="3"/>
+    <text x="56" y="218" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">ε eng · true · NaN on fail</text>
+  </g>
+</svg>

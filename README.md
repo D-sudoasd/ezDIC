@@ -1,89 +1,82 @@
+<p align="center">
+  <img src="assets/readme/hero.svg" width="100%" alt="ezDIC: lightweight virtual extensometer for linear strain from image sequences.">
+</p>
+
 # ezDIC
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20222465.svg)](https://doi.org/10.5281/zenodo.20222465)
 
 **A lightweight virtual extensometer for extracting linear strain from image sequences.**
 
-ezDIC is designed for researchers who need fast, practical strain extraction without running a full-field Digital image correlation workflow. It tracks two user-defined ROI markers across an image sequence and exports engineering strain, true strain, quality-control information, and Origin-compatible TXT files for plotting and reporting.
+ezDIC tracks two user-defined ROI markers across an image sequence and exports engineering strain, true strain, quality-control information, and Origin-compatible TXT (optional OPJU). It is for researchers who need a reliable **1D strain history** without running full-field DIC.
 
-Developed by **Dr. Delun Gong**.
+Developed by **Dr. Delun Gong** · DOI [10.5281/zenodo.20222465](https://doi.org/10.5281/zenodo.20222465)
 
-DOI: [10.5281/zenodo.20222465](https://doi.org/10.5281/zenodo.20222465)
+## Why ezDIC
 
-## Why ezDIC?
+Many materials experiments only need a linear strain curve — not displacement fields or strain maps.
 
-Many materials experiments only require a reliable 1D strain history rather than full-field displacement maps. ezDIC focuses on that narrower problem:
+| You need | ezDIC provides |
+| --- | --- |
+| Fast 1D strain | Two-ROI virtual extensometer |
+| Honest failed frames | `NaN` instead of silent interpolation |
+| Lab plotting | Origin-compatible TXT; optional OPJU |
+| Multiple gauges | Mean strain ± SD / SEM; Poisson-ratio roles |
+| No Python for users | Portable Windows folder with `ezDIC.exe` |
 
-- **Simple workflow**: load images, draw two ROIs, run tracking, export strain.
-- **Virtual extensometer model**: strain is computed from the changing distance between two tracked ROI centers.
-- **Origin-compatible TXT output**: the default export contains `Frame`, `EngineeringStrain`, and `TrueStrain`.
-- **Origin OPJU export**: optionally writes core result tables directly into an OriginPro project file.
-- **Mean-strain export**: multiple extensometers with the same role and direction are averaged frame by frame with standard deviation, SEM, and valid-count columns.
-- **Poisson-ratio export**: mark axial and transverse ROI groups to export transverse strain and `PoissonRatio`; multiple groups are averaged before the ratio is computed.
-- **Quality control built in**: rejected frames, adaptive accepts, correlation scores, and QC summaries are reported.
-- **No Python required for users**: Windows releases are distributed as a green, portable folder with `ezDIC.exe`.
-- **Research-oriented defaults**: failed tracking frames remain `NaN` instead of being silently interpolated.
+## Typical use cases
 
-## Typical Use Cases
+- Tensile, compression, bending, or thermal-deformation sequences where the target is a linear strain curve
+- Quick cross-check of physical extensometers or full-field DIC
+- Teaching image-based strain without a commercial DIC package
+- Exploratory analysis before committing to full-field DIC
 
-- Tensile, compression, bending, or thermal-deformation image sequences where the primary target is a linear strain curve.
-- Quick validation of extensometer or DIC measurements.
-- Teaching image-based strain extraction without requiring a full commercial DIC package.
-- Lightweight exploratory analysis before committing to full-field DIC.
+## Workflow
+
+```text
+Load images  →  Draw two ROIs  →  Track  →  Export strain + QC
+```
 
 ## Outputs
 
-By default, ezDIC writes a compact `core/` result folder:
+Default `core/` result folder:
 
 ```text
 core/
   strain_G01.txt
   strain_all_groups.txt
   strain_mean_groups.txt
-  ezDIC_results.opju       # optional, requires OriginPro 2021+ and originpro
-  poisson_ratio.txt        # when axial/transverse ROI roles are set
-  engineering_strain_G01.png
-  engineering_strain_all_groups.png
-  poisson_ratio.png        # when axial/transverse ROI roles are set
+  ezDIC_results.opju       # optional; OriginPro 2021+ + originpro
+  poisson_ratio.txt        # when axial/transverse roles are set
+  engineering_strain_*.png
 qc/
   qc_summary.txt
 optional/
-  publication_figures/     # optional PNG/TIFF/PDF/SVG/EPS publication-style figures
+  publication_figures/     # PNG/TIFF/PDF/SVG/EPS when enabled
 ```
 
-The primary TXT format is intentionally simple:
+Primary TXT shape:
 
 ```text
 Frame	EngineeringStrain	TrueStrain
 1	0.00000000	0.00000000
 2	-0.00000254	-0.00000254
-3	0.00000580	0.00000580
 ```
 
-Optional exports include an Origin OPJU project, full CSV tables, correlation plots, tracking overlays, parameter summaries, and a **Publication-style figure package**. The publication package writes high-resolution PNG/TIFF files and vector PDF/SVG/EPS files under `optional/publication_figures/` using the unified ezDIC plotting style. The OPJU export requires Windows, OriginPro 2021+, a valid local OriginPro license, and the `originpro` Python package; if OPJU export fails, ezDIC keeps the TXT/PNG/CSV/publication figure outputs and reports only the OPJU-specific failure.
+- **Mean strain**: averages groups with the same `role` and `actual_mode`; rejected / `NaN` frames excluded.
+- **Poisson ratio**: define at least one `axial` and one `transverse` ROI group; ratio from engineering strain, with `NaN` when axial magnitude is tiny or missing.
+- **OPJU**: requires Windows, OriginPro 2021+, a valid local license, and `originpro`. If OPJU fails, TXT/PNG/CSV and publication figures are kept.
 
-For repeated virtual extensometers, `strain_mean_groups.txt` averages groups with the same `role` and `actual_mode` frame by frame. Rejected frames and `NaN` strain values are excluded from the mean. The mean table includes:
+## Windows quick start
 
-```text
-MeanEngineeringStrain_<role>_<mode>	MeanTrueStrain_<role>_<mode>	StdEngineeringStrain_<role>_<mode>	SemEngineeringStrain_<role>_<mode>	ValidGroupCount_<role>_<mode>
-```
-
-For Poisson-ratio analysis, add at least one ROI group with role `axial` and at least one with role `transverse`. `strain_all_groups.txt` keeps the original per-group columns, appends mean-strain columns, and appends:
-
-```text
-AxialEngineeringStrain	TransverseEngineeringStrain	PoissonRatio
-```
-
-## Windows Quick Start
-
-1. Download `ezDIC_Windows_x64_v0.1.3.zip` from the release package.
+1. Download `ezDIC_Windows_x64_v0.1.3.zip` from the [releases](https://github.com/D-sudoasd/ezDIC/releases).
 2. Extract the full `ezDIC_Windows_x64` folder.
 3. Double-click `ezDIC.exe`.
-4. Do not copy `ezDIC.exe` alone; keep `_internal/` in the same folder.
+4. Keep `_internal/` next to the EXE — do not copy `ezDIC.exe` alone.
 
 Target platform: **Windows 10/11 x64**.
 
-## Running From Source
+## Run from source
 
 ```powershell
 py -m venv .venv
@@ -91,13 +84,11 @@ py -m venv .venv
 .\.venv\Scripts\python.exe dic_virtual_extensometer_gui_v7_multi_roi_range.py
 ```
 
-## Building The Windows Release
+## Build the Windows release
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build_release.ps1
 ```
-
-The script creates:
 
 ```text
 release/
@@ -107,78 +98,50 @@ release/
 
 ## Validation
 
-The current automated checks cover:
-
-- Origin-compatible TXT export.
-- Origin OPJU table construction and failure handling with a fake OriginPro API.
-- true strain recomputation from engineering strain.
-- QC summary generation.
-- GUI title and developer attribution.
-- release metadata and PyInstaller packaging files.
-
-Run:
-
 ```powershell
 py -m pytest -q
 ```
 
-## How to Cite
+Automated checks cover Origin TXT export, OPJU table construction with a fake Origin API, true-strain recomputation, QC summary, GUI attribution, and packaging metadata.
 
-This repository includes `CITATION.cff`, so GitHub will show a **Cite this repository** link on the project page. For papers, theses, reports, and presentations, please cite the Zenodo DOI:
-
-```text
-Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain from image sequences (Version 0.1.3) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20222465
-```
-
-```text
-DOI: 10.5281/zenodo.20222465
-```
-
-GitHub repository: <https://github.com/D-sudoasd/ezDIC>
-
-## Scientific Notes
-
-ezDIC computes engineering strain using:
+## Scientific notes
 
 ```text
 engineering strain = (L - L0) / L0
+true strain        = ln(L / L0) = ln(1 + engineering strain)
 ```
 
-and true strain using:
+`L0` is the initial ROI-center separation; `L` is the current separation. Failed tracking frames stay `NaN`.
 
-```text
-true strain = ln(L / L0) = ln(1 + engineering strain)
-```
-
-where `L0` is the initial ROI-center separation and `L` is the current separation. If tracking fails, the frame is exported as `NaN` to preserve the experimental record.
-
-Poisson ratio is computed from engineering strain. If more than one axial or transverse ROI group is defined, ezDIC first computes the frame-by-frame mean strain within each role:
+Poisson ratio (engineering strain):
 
 ```text
 PoissonRatio = - TransverseEngineeringStrain / AxialEngineeringStrain
 ```
 
-If either role has no valid strain for a frame, either mean strain is `NaN`, or `abs(AxialEngineeringStrain) < 1e-6`, the Poisson-ratio value is exported as `NaN`.
+`NaN` when a role is missing, mean strain is `NaN`, or `abs(AxialEngineeringStrain) < 1e-6`.
 
 ## Limitations
 
-ezDIC is not a replacement for full-field DIC. It does not compute strain maps, displacement fields, or local strain heterogeneity. It is intended for fast extraction of a representative linear strain curve from image sequences where a virtual extensometer is scientifically appropriate.
+ezDIC is **not** full-field DIC. It does not compute strain maps, displacement fields, or local heterogeneity. Use it when a virtual extensometer is scientifically appropriate.
 
-## Attribution And Usage
+## How to cite
 
-This software was developed by **Dr. Delun Gong** for lightweight extraction of linear strain from image sequences.
+```text
+Gong, D. (2026). ezDIC: A lightweight virtual extensometer for extracting linear strain
+from image sequences (Version 0.1.3) [Computer software]. Zenodo.
+https://doi.org/10.5281/zenodo.20222465
+```
 
-DOI: [10.5281/zenodo.20222465](https://doi.org/10.5281/zenodo.20222465)
+`CITATION.cff` is included so GitHub shows **Cite this repository**.
 
-Users are not permitted to:
+## Attribution and usage
 
-1. claim that they developed this software;
-2. remove or alter the developer attribution;
-3. redistribute, copy, forward, or share this software with unauthorized users;
-4. use this software outside the authorized research or teaching context.
+Developed by **Dr. Delun Gong**. Users are not permitted to:
 
-If you need to share or reuse this software, please obtain permission from **Dr. Delun Gong** first.
+1. claim they developed this software;
+2. remove or alter developer attribution;
+3. redistribute or share with unauthorized users;
+4. use it outside authorized research or teaching context.
 
-## Keywords
-
-Digital image correlation, virtual extensometer, strain extraction, engineering strain, true strain, materials testing, tensile testing, image sequence analysis, Origin-compatible TXT.
+Obtain permission from the author before sharing or reusing beyond that scope. See also `NOTICE_Attribution_and_Usage.txt` and `LICENSE.txt` in the repository.
