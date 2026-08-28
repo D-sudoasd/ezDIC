@@ -37,6 +37,10 @@ Basic Workflow
 7. Optional: set axial/transverse roles for Poisson-ratio export. Multiple groups with the same role and direction are averaged frame by frame.
 8. Click Start Analysis and Export.
 
+Full-field 2D DIC
+-----------------
+Switch the workspace mode to 全场 2D DIC. Draw one rectangular ROI on the reference frame, set subset size, step, and solver (IC-GN or IC-LM), then start analysis. ezDIC matches a POI grid, writes u/v and Green-Lagrange strain tables under dic/, and shows colormap overlays in the app. Failed points stay NaN.
+
 Default Output
 --------------
 By default, ezDIC exports:

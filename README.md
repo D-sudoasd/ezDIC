@@ -6,9 +6,9 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20222465.svg)](https://doi.org/10.5281/zenodo.20222465)
 
-**A lightweight virtual extensometer for extracting linear strain from image sequences.**
+**A lightweight virtual extensometer and 2D DIC workstation for image sequences.**
 
-Tracks two user-defined ROI markers across an image sequence and exports engineering strain, true strain, QC, and Origin-compatible TXT (optional OPJU). For researchers who need a reliable **1D strain history** without full-field DIC.
+Tracks two user-defined ROI markers across an image sequence and exports engineering strain, true strain, QC, and Origin-compatible TXT (optional OPJU). Also runs **full-field 2D DIC** (IC-GN / IC-LM) to export displacement and Green-Lagrange strain maps. For researchers who need a reliable **1D strain history** or in-plane full-field maps without a commercial VIC-2D / MatchID seat.
 
 Developed by **Dr. Delun Gong** · [DOI 10.5281/zenodo.20222465](https://doi.org/10.5281/zenodo.20222465)
 
@@ -19,13 +19,15 @@ Developed by **Dr. Delun Gong** · [DOI 10.5281/zenodo.20222465](https://doi.org
 | You need | ezDIC provides |
 | --- | --- |
 | Fast 1D strain | Two-ROI virtual extensometer |
+| Full-field 2D DIC | Subset grid, IC-GN / IC-LM, `u`/`v` and Green-Lagrange maps |
 | Honest failed frames | `NaN` instead of silent interpolation |
-| Lab plotting | Origin-compatible TXT; optional OPJU |
+| Lab plotting | Origin-compatible TXT; optional OPJU; publication colormaps |
 | Multiple gauges | Mean ± SD / SEM; Poisson-ratio roles |
 | No Python for users | Portable Windows folder with `ezDIC.exe` |
 
 ```text
 Load images  →  Draw two ROIs  →  Track  →  Export strain + QC
+Load images  →  Draw field ROI  →  IC-GN/IC-LM  →  Export u/v/Exx maps
 ```
 
 ### Outputs
@@ -70,7 +72,7 @@ Build: `powershell -File .\build_release.ps1` · Tests: `py -m pytest -q`
 
 ## Limitations
 
-Not full-field DIC — no strain maps, displacement fields, or local heterogeneity.
+2D local-subset DIC only (IC-GN / IC-LM, first-order affine). Not stereo / 3D DIC, not DVC, not GPU/MPI, not SIFT-guided or global B-spline FEM. Failed subsets stay `NaN`.
 
 ## Cite
 
