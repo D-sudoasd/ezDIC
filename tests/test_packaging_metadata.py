@@ -82,6 +82,18 @@ def reset_gui_app(app):
         app.export_publication_figures.set(False)
     if hasattr(app, "export_origin_opju"):
         app.export_origin_opju.set(False)
+    if hasattr(app, "analysis_mode"):
+        app.analysis_mode.set(ezdic.ANALYSIS_MODE_EXTENSOMETER)
+        app.set_analysis_mode()
+    if hasattr(app, "dic_subset_size"):
+        app.dic_subset_size.set(21)
+        app.dic_step.set(5)
+        app.dic_solver.set(ezdic.DIC_SOLVER_ICGN)
+        app.dic_strain_window.set(5)
+        app.dic_smooth_sigma.set(0.0)
+        app.dic_field_component.set("u")
+        app.field_roi = None
+        app.dic_last_field = None
     app.image_paths = []
     app.loaded_image_folder = None
     app.first_raw = None
@@ -243,6 +255,8 @@ def test_gui_emphasizes_start_analysis_action(gui_app):
     assert app.start_button.cget("text") == "开始分析并导出结果"
     assert app.start_button.cget("style") == "Primary.TButton"
     assert "下一步" in app.workflow_hint_var.get()
+    assert getattr(app, "workflow_hint_label", None) is not None
+    assert getattr(app, "workflow_guide_frame", None) is not None
 
 
 def test_gui_initial_layout_fits_default_window_height(gui_app):
@@ -250,7 +264,12 @@ def test_gui_initial_layout_fits_default_window_height(gui_app):
     root.update_idletasks()
 
     assert root.winfo_reqheight() <= 980
-    assert int(app.log_text.cget("height")) <= 10
+    log_height = int(app.log_text.cget("height"))
+    assert 3 <= log_height <= 10
+    assert app.progress is not None
+    assert str(app.progress.winfo_class())
+    assert app.status_label is not None
+    assert app.status_var.get().strip()
 
 
 def test_gui_minimum_size_fits_research_laptop_width(gui_app):
@@ -283,24 +302,36 @@ def test_gui_layout_fits_research_laptop_viewport(gui_app):
         "controls_panel",
         "image_frame",
         "analysis_frame",
+        "workflow_guide_frame",
+        "workflow_hint_label",
+        "progress",
+        "status_label",
+        "log_text",
     ]:
         assert getattr(app, attr, None) is not None
+
+    assert_widget_fully_visible_in(app.controls_frame, app.workflow_guide_frame)
+    assert_widget_fully_visible_in(app.controls_frame, app.workflow_hint_label)
+    assert app.workflow_hint_var.get().strip()
 
     root_w = root.winfo_width()
     root_h = root.winfo_height()
     root_x = root.winfo_rootx()
     root_y = root.winfo_rooty()
-    for widget in [app.canvas, app.controls_canvas, app.measure_frame]:
+    for widget in [app.canvas, app.controls_canvas, app.measure_frame, app.roi1_button, app.roi2_button]:
         assert widget.winfo_width() > 20
         assert widget.winfo_height() > 10
         x0 = widget.winfo_rootx() - root_x
         y0 = widget.winfo_rooty() - root_y
         x1 = x0 + widget.winfo_width()
         y1 = y0 + widget.winfo_height()
-        assert 0 <= x0 < root_w
-        assert 0 <= y0 < root_h
-        assert x1 <= root_w
-        assert y1 <= root_h
+        assert 0 <= x0 < root_w, f"{widget} x0={x0}"
+        assert 0 <= y0 < root_h, f"{widget} y0={y0} root_h={root_h}"
+        assert x1 <= root_w, f"{widget} x1={x1} root_w={root_w}"
+        assert y1 <= root_h, f"{widget} y1={y1} root_h={root_h}"
+
+    assert_widget_fully_visible_in(root, app.roi1_button)
+    assert_widget_fully_visible_in(root, app.roi2_button)
 
     assert app.controls_panel.winfo_reqheight() > app.controls_canvas.winfo_height()
     for widget in [app.group_tree, app.start_button, app.progress, app.log_text]:
@@ -348,6 +379,7 @@ def test_measurement_settings_are_primary_and_visible_on_laptop_viewport(gui_app
     assert getattr(app, "workflow_panel", None) is app.controls_panel
     assert app.controls_canvas.winfo_height() >= 500
     assert app.measure_frame.winfo_height() >= 220
+    assert_widget_fully_visible_in(app.controls_frame, app.workflow_hint_label)
 
     for widget in [
         app.measure_frame,
@@ -579,6 +611,7 @@ def test_gui_primary_interactive_controls_have_scientific_tooltips(gui_app):
         "delete_group_button",
         "clear_rois_button",
         "group_tree",
+        "workflow_hint_label",
         "canvas",
         "start_button",
         "viewer_export_btn",
@@ -635,6 +668,29 @@ def test_gui_uses_clear_action_button_labels(gui_app):
         assert getattr(app, attr).cget("text") == text
 
 
+def test_roi_group_tree_headings_are_chinese_task_labels(gui_app):
+    _root, app = gui_app
+    raw_ids = ("name", "role", "selected", "actual")
+    columns = app.group_tree["columns"]
+    if isinstance(columns, str):
+        columns = tuple(columns.split())
+    else:
+        columns = tuple(columns)
+    assert columns[:4] == raw_ids
+    for col in columns:
+        text = str(app.group_tree.heading(col, "text")).strip()
+        assert text, f"{col} heading should not be empty"
+        assert text not in raw_ids
+    for col in raw_ids:
+        text = str(app.group_tree.heading(col, "text"))
+        assert text != col
+        assert any("\u4e00" <= ch <= "\u9fff" for ch in text), text
+    assert "组名" == app.group_tree.heading("name", "text")
+    assert "角色" == app.group_tree.heading("role", "text")
+    assert "所选方向" == app.group_tree.heading("selected", "text")
+    assert "实际方向" == app.group_tree.heading("actual", "text")
+
+
 def test_export_preset_buttons_are_named_and_explained(gui_app):
     _root, app = gui_app
 
@@ -667,6 +723,16 @@ def test_start_analysis_button_reflects_workflow_readiness(gui_app, tmp_path, mo
     add_basic_roi_group(app)
     assert str(app.start_button.cget("state")) == "normal"
     assert "开始分析" in app.workflow_hint_var.get()
+
+    app.is_processing = True
+    try:
+        app.update_workflow_action_states()
+        assert str(app.start_button.cget("state")) == "disabled"
+        assert "正在处理" in app.workflow_hint_var.get()
+    finally:
+        app.is_processing = False
+        app.update_workflow_action_states()
+    assert str(app.start_button.cget("state")) == "normal"
 
 
 def test_preflight_panel_blocks_missing_inputs_and_export_options(gui_app, tmp_path, monkeypatch):
@@ -881,11 +947,13 @@ def test_build_release_smoke_recreates_stale_build_venv(tmp_path):
         ],
         cwd=project,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=90,
     )
 
-    output = result.stdout + result.stderr
+    output = (result.stdout or "") + (result.stderr or "")
     assert result.returncode == 0, output
     assert "ezDIC build smoke test" in output
 
@@ -934,11 +1002,13 @@ def test_build_release_smoke_accepts_usable_venv_after_nonzero_create(tmp_path):
         cwd=project,
         env=env,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=90,
     )
 
-    output = result.stdout + result.stderr
+    output = (result.stdout or "") + (result.stderr or "")
     assert result.returncode == 0, output
     assert "ezDIC build smoke test" in output
 
@@ -1300,6 +1370,74 @@ def test_processing_completion_mentions_mean_export_and_opens_output_root(gui_ap
     assert opened_paths == [output_dir]
 
 
+def test_completed_analysis_populates_qc_overview_and_curve_preview(gui_app, tmp_path, monkeypatch):
+    root, app = gui_app
+    reset_gui_app(app)
+    idle_qc = "分析完成后显示 QC 总览。"
+    monkeypatch.setattr(app, "post_to_ui", lambda callback: callback())
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    monkeypatch.setattr(ezdic.messagebox, "showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ezdic, "open_output_folder", lambda path: None, raising=False)
+
+    app.qc_overview_var.set(idle_qc)
+    app.clear_viewer(keep_placeholder=True)
+    app.viewer_frame.grid_remove()
+
+    image_dir = tmp_path / "images_qc_preview"
+    image_dir.mkdir()
+    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    for idx in range(3):
+        arr = np.full((100, 160), 30, dtype=np.uint8)
+        arr[30:60, 20 + idx:50 + idx] = patch
+        arr[30:60, 90 + idx:120 + idx] = patch
+        ok, data = cv2.imencode(".png", arr)
+        assert ok
+        data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
+
+    output_dir = tmp_path / "out_qc_preview"
+    app.image_folder.set(str(image_dir))
+    app.output_folder.set(str(output_dir))
+    app.load_first_image()
+    app.roi1 = (20, 30, 30, 30)
+    app.roi2 = (90, 30, 30, 30)
+    app.strain_mode.set("x")
+    app.sync_strain_mode_display()
+    app.add_current_group()
+
+    try:
+        app.process_images(app.build_processing_settings())
+        root.update_idletasks()
+
+        qc_text = app.qc_overview_var.get()
+        assert qc_text != idle_qc
+        assert "QC 总览" in qc_text
+        assert "处理完成" in app.status_var.get()
+        assert float(app.progress.cget("value")) == 100.0
+        log_text = app.log_text.get("1.0", "end")
+        assert "第 " in log_text
+        assert "帧" in log_text
+        assert "组" in log_text
+        assert app.results_df is not None
+        assert not app.results_df.empty
+        assert app.viewer_figure is not None
+        assert str(app.viewer_export_btn.cget("state")) == "normal"
+        assert app.viewer_frame.grid_info()
+    finally:
+        app.clear_viewer(keep_placeholder=False)
+        app.viewer_frame.grid_remove()
+        app.qc_overview_var.set(idle_qc)
+        reset_gui_app(app)
+
+
+def test_tracking_status_line_uses_chinese_task_wording():
+    line = ezdic.format_tracking_status_line(2, 10, "G01", "hard", "0.001000", 0.95, 0.94)
+    assert "第 2/10 帧" in line
+    assert "组 G01" in line
+    assert "硬接受" in line
+    assert "应变=0.001000" in line
+    assert "Frame " not in line
+
+
 def test_completion_folder_open_failure_is_logged(gui_app, tmp_path, monkeypatch):
     _root, app = gui_app
     reset_gui_app(app)
@@ -1360,16 +1498,15 @@ def test_release_support_files_exist_and_include_usage_limits():
     assert "Dr. Delun Gong" in readme_text
     assert DOI in readme_text
     assert DOI_URL in readme_text
-    assert "Virtual extensometer" in github_readme_text
+    assert "virtual extensometer" in github_readme_text.lower()
     assert "Origin-compatible TXT" in github_readme_text
-    assert "Origin OPJU" in github_readme_text
+    assert "OPJU" in github_readme_text
     assert "OriginPro 2021+" in readme_text
-    assert "Publication-style figure package" in github_readme_text
-    assert "PNG/TIFF/PDF/SVG/EPS" in github_readme_text
+    assert "publication_figures" in github_readme_text
     assert "Publication Figure Package" in readme_text
     assert "optional/publication_figures" in readme_text
     assert "PNG/TIFF/PDF/SVG/EPS" in readme_text
-    assert "Digital image correlation" in github_readme_text
+    assert "full-field DIC" in github_readme_text
     assert "Dr. Delun Gong" in github_readme_text
     assert DOI in github_readme_text
     assert DOI_URL in github_readme_text
@@ -1410,3 +1547,79 @@ def test_pyinstaller_build_files_define_green_folder_release():
     assert "release" in script_text
     assert "ezDIC_Windows_x64" in script_text
     assert "Compress-Archive" in script_text
+
+
+def test_gui_exposes_dual_mode_fullfield_controls_and_field_viewer(gui_app):
+    root, app = gui_app
+    assert app.analysis_mode.get() == ezdic.ANALYSIS_MODE_EXTENSOMETER
+    assert app.start_button.cget("text") == "开始分析并导出结果"
+    assert app.roi1_button is not None
+    assert app.dic_subset_size_entry is not None
+    assert app.dic_step_entry is not None
+    assert app.dic_solver_box is not None
+    values = app.dic_solver_box.cget("values")
+    if isinstance(values, str):
+        values = tuple(values.split())
+    else:
+        values = tuple(values)
+    assert ezdic.DIC_SOLVER_ICGN in values
+    assert ezdic.DIC_SOLVER_ICLM in values
+    assert app.mode_extensometer_radio is not None
+    assert app.mode_fullfield_radio is not None
+
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    root.update_idletasks()
+    assert str(app.analysis_mode.get()) == ezdic.ANALYSIS_MODE_FULLFIELD
+
+    reference = ezdic.generate_synthetic_speckle(64, 64, seed=2)
+    deformed = ezdic.warp_image_translation(reference, 0.7, -0.4)
+    field = ezdic.run_2d_dic(
+        reference,
+        deformed,
+        (12, 12, 40, 40),
+        subset_size=15,
+        step=8,
+        solver=ezdic.DIC_SOLVER_ICGN,
+    )
+    try:
+        app.show_field_viewer(field, component="u")
+        root.update_idletasks()
+        assert app.viewer_figure is not None
+        assert len(app.viewer_figure.axes) >= 2  # field + colorbar
+        app.toggle_dark_mode()
+        root.update_idletasks()
+        app.toggle_dark_mode()
+        root.update_idletasks()
+        assert app.viewer_figure is not None
+    finally:
+        if app.dark_mode.get():
+            app.toggle_dark_mode()
+        app.clear_viewer(keep_placeholder=False)
+        app.viewer_frame.grid_remove()
+        app.analysis_mode.set(ezdic.ANALYSIS_MODE_EXTENSOMETER)
+        app.set_analysis_mode()
+
+
+def test_fullfield_preflight_requires_field_roi_not_extensometer_groups(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    load_two_frame_sequence(app, tmp_path / "images_ff", tmp_path / "out_ff")
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+
+    items = app.build_preflight_items()
+    assert any(item["level"] == "block" and item["label"] == "全场 ROI" for item in items)
+    assert str(app.start_button.cget("state")) == "disabled"
+
+    app.roi1 = (12, 12, 50, 50)
+    app.field_roi = app.roi1
+    app.update_workflow_action_states()
+    items = app.build_preflight_items()
+    assert not any(item["level"] == "block" and item["label"] == "全场 ROI" for item in items)
+    assert any(item["label"] == "DIC 参数" for item in items)
+    assert str(app.start_button.cget("state")) == "normal"
+
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_EXTENSOMETER)
+    app.set_analysis_mode()
