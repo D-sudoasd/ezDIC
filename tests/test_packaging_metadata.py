@@ -94,8 +94,15 @@ def reset_gui_app(app):
         app.dic_field_component.set("u")
         app.field_roi = None
         app.dic_last_field = None
+        app.dic_last_image = None
+        app.dic_last_frame_1based = None
+        app.dic_last_filename = None
+        app.dic_last_reference_frame_1based = None
+        app.dic_last_reference_filename = None
+        app.field_viewer_context_var.set("")
     app.image_paths = []
     app.loaded_image_folder = None
+    app.loaded_image_sequence_fingerprint = None
     app.first_raw = None
     app.first_img8 = None
     app.current_fullres_img8 = None
@@ -110,11 +117,20 @@ def reset_gui_app(app):
     app.current_preview_index = 0
     app.roi1 = None
     app.roi2 = None
+    app.roi1_reference_frame_1based = None
+    app.roi2_reference_frame_1based = None
+    app.field_roi_reference_frame_1based = None
     app.roi_groups.clear()
     app.next_group_idx = 1
     app.group_name_var.set("")
     app.refresh_group_tree()
     app.canvas.delete("all")
+    app.results_df = None
+    app.results_groups = None
+    app.last_qc_summary = None
+    app._completion_pending = False
+    app._active_run_token = None
+    app.is_processing = False
 
 
 def load_two_frame_sequence(app, folder, output_folder):
@@ -137,6 +153,25 @@ def add_basic_roi_group(app):
 
 def actual_font_size(root, font_spec):
     return abs(tkfont.Font(root=root, font=font_spec).actual("size"))
+
+
+def copy_release_contract_inputs(project):
+    """Create a minimal but complete metadata fixture for build smoke tests."""
+    names = [
+        "VERSION.txt",
+        "dic_virtual_extensometer_gui_v7_multi_roi_range.py",
+        ".zenodo.json",
+        "CITATION.cff",
+        "requirements.txt",
+        "requirements-origin.txt",
+        "requirements-build.txt",
+        "ezDIC.spec",
+        "README_使用说明.txt",
+        "NOTICE_Attribution_and_Usage.txt",
+        "LICENSE.txt",
+    ]
+    for name in names:
+        shutil.copy2(ROOT / name, project / name)
 
 
 def assert_widget_fully_visible_in(container, widget, *, min_width=20, min_height=10):
@@ -225,7 +260,7 @@ def test_viewer_plot_uses_readable_legend_font(gui_app):
 
 def test_app_metadata_and_usage_notice_are_explicit():
     assert ezdic.APP_NAME == "ezDIC"
-    assert ezdic.APP_VERSION == "0.1.3"
+    assert ezdic.APP_VERSION == "0.1.4"
     assert ezdic.APP_DEVELOPER == "Dr. Delun Gong"
     assert ezdic.APP_DOI == DOI
     assert ezdic.APP_DOI_URL == DOI_URL
@@ -241,7 +276,7 @@ def test_window_title_contains_developer(gui_app):
     root, _app = gui_app
     title = root.title()
 
-    assert title == "ezDIC v0.1.3 - Developed by Dr. Delun Gong - DOI: 10.5281/zenodo.20222465"
+    assert title == "ezDIC v0.1.4 - Developed by Dr. Delun Gong - DOI: 10.5281/zenodo.20222465"
 
 
 def test_gui_initializes_poisson_role_selection(gui_app):
@@ -930,6 +965,7 @@ def test_build_release_smoke_recreates_stale_build_venv(tmp_path):
     project = tmp_path / "build_project"
     project.mkdir()
     shutil.copy2(ROOT / "build_release.ps1", project / "build_release.ps1")
+    copy_release_contract_inputs(project)
 
     stale_python = project / ".venv-build" / "Scripts" / "python.exe"
     stale_python.parent.mkdir(parents=True)
@@ -965,6 +1001,7 @@ def test_build_release_smoke_accepts_usable_venv_after_nonzero_create(tmp_path):
     project = tmp_path / "build_project"
     project.mkdir()
     shutil.copy2(ROOT / "build_release.ps1", project / "build_release.ps1")
+    copy_release_contract_inputs(project)
 
     fake_bin = tmp_path / "fake_bin"
     fake_bin.mkdir()
@@ -1472,7 +1509,7 @@ def test_release_support_files_exist_and_include_usage_limits():
     citation = ROOT / "CITATION.cff"
     version = ROOT / "VERSION.txt"
     zenodo = ROOT / ".zenodo.json"
-    release_notes = ROOT / "RELEASE_NOTES_v0.1.3.md"
+    release_notes = ROOT / "RELEASE_NOTES_v0.1.4.md"
 
     assert notice.exists()
     assert readme.exists()
@@ -1503,7 +1540,7 @@ def test_release_support_files_exist_and_include_usage_limits():
     assert "OPJU" in github_readme_text
     assert "OriginPro 2021+" in readme_text
     assert "publication_figures" in github_readme_text
-    assert "Publication Figure Package" in readme_text
+    assert "论文图包" in readme_text
     assert "optional/publication_figures" in readme_text
     assert "PNG/TIFF/PDF/SVG/EPS" in readme_text
     assert "full-field DIC" in github_readme_text
@@ -1512,7 +1549,7 @@ def test_release_support_files_exist_and_include_usage_limits():
     assert DOI_URL in github_readme_text
     assert f"doi: {DOI}" in citation_text
     assert DOI_URL in citation_text
-    assert "ezDIC v0.1.3" in version_text
+    assert "ezDIC v0.1.4" in version_text
     assert DOI in version_text
     assert '"upload_type": "software"' in zenodo_text
     assert '"access_right": "restricted"' in zenodo_text
@@ -1538,8 +1575,10 @@ def test_pyinstaller_build_files_define_green_folder_release():
     spec_text = spec.read_text(encoding="utf-8")
     script_text = build_script.read_text(encoding="utf-8")
 
-    for package in ["opencv-python", "numpy", "pandas", "matplotlib", "pillow", "originpro"]:
+    for package in ["opencv-python", "numpy", "pandas", "matplotlib", "pillow"]:
         assert package in req_text
+    assert "originpro" not in req_text
+    assert "originpro" in (ROOT / "requirements-origin.txt").read_text(encoding="utf-8")
 
     assert "pyinstaller" in build_req_text.lower()
     assert "name='ezDIC'" in spec_text
@@ -1615,6 +1654,7 @@ def test_fullfield_preflight_requires_field_roi_not_extensometer_groups(gui_app,
 
     app.roi1 = (12, 12, 50, 50)
     app.field_roi = app.roi1
+    app.field_roi_reference_frame_1based = 1
     app.update_workflow_action_states()
     items = app.build_preflight_items()
     assert not any(item["level"] == "block" and item["label"] == "全场 ROI" for item in items)
@@ -1623,3 +1663,465 @@ def test_fullfield_preflight_requires_field_roi_not_extensometer_groups(gui_app,
 
     app.analysis_mode.set(ezdic.ANALYSIS_MODE_EXTENSOMETER)
     app.set_analysis_mode()
+
+
+def test_fullfield_roi_is_separate_from_1d_roi_and_tracks_reference_frame(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    load_two_frame_sequence(app, tmp_path / "images_roi_separation", tmp_path / "out_roi_separation")
+
+    app.roi1 = (10, 10, 30, 30)
+    app.roi2 = (80, 10, 30, 30)
+    app.roi1_reference_frame_1based = 1
+    app.roi2_reference_frame_1based = 1
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+
+    items = app.build_preflight_items()
+    assert any(item["level"] == "block" and item["label"] == "全场 ROI" for item in items)
+    assert app.build_processing_settings()["field_roi"] is None
+
+    app.field_roi = (20, 20, 50, 50)
+    app.field_roi_reference_frame_1based = 1
+    items = app.build_preflight_items()
+    assert not any(item["level"] == "block" and item["label"] == "全场 ROI" for item in items)
+    assert app.build_processing_settings()["field_roi"] == (20, 20, 50, 50)
+
+    app.start_frame_1based.set(2)
+    items = app.build_preflight_items()
+    assert any(item["level"] == "block" and item["label"] == "参考帧" for item in items)
+
+
+def test_fullfield_hides_1d_controls_and_does_not_require_1d_exports(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    load_two_frame_sequence(app, tmp_path / "images_mode_visibility", tmp_path / "out_mode_visibility")
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+
+    assert app.measure_core_frame.grid_info() == {}
+    assert app.roi_group_frame.grid_info() == {}
+    assert app.export_frame.grid_info() == {}
+    assert app.fullfield_export_info_frame.grid_info()
+
+    app.field_roi = (12, 12, 70, 70)
+    app.field_roi_reference_frame_1based = 1
+    for variable in app._export_option_vars():
+        variable.set(False)
+    items = app.build_preflight_items()
+    assert not any(item["label"] == "导出选项" and item["level"] == "block" for item in items)
+
+
+def test_analysis_range_rejects_out_of_range_without_clamping_and_load_handles_bad_intvar(
+    gui_app, tmp_path, monkeypatch
+):
+    _root, app = gui_app
+    reset_gui_app(app)
+    errors = []
+    monkeypatch.setattr(ezdic.messagebox, "showerror", lambda title, message: errors.append((title, message)))
+    load_two_frame_sequence(app, tmp_path / "images_range_validation", tmp_path / "out_range_validation")
+
+    app.start_frame_1based.set(0)
+    with pytest.raises(RuntimeError, match="1 到 2"):
+        app.get_analysis_indices()
+    assert int(app.start_frame_1based.get()) == 0
+
+    app.start_frame_1based.set(1)
+    app.end_frame_1based.set(3)
+    with pytest.raises(RuntimeError, match="1 到 2"):
+        app.get_analysis_indices()
+    assert int(app.end_frame_1based.get()) == 3
+
+    app.start_frame_1based.set("bad")
+    app.image_folder.set(str(tmp_path / "images_range_validation"))
+    app.load_first_image()
+    assert errors
+    assert "整数" in errors[-1][1]
+
+
+def test_same_folder_mutation_clears_all_sequence_dependent_and_viewer_state(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    folder = tmp_path / "images_mutation"
+    load_two_frame_sequence(app, folder, tmp_path / "out_mutation")
+    add_basic_roi_group(app)
+    app.results_df = pd.DataFrame({"x": [1]})
+    app.results_groups = [{"name": "G01"}]
+    app.last_qc_summary = {"overall": {"qc_level": "Good"}, "groups": {}}
+    app.dic_last_field = {"x": np.array([1.0])}
+    app._viewer_kind = "fullfield"
+    app.viewer_frame.grid()
+
+    # Keep the path and frame count unchanged but mutate file metadata/content.
+    write_test_image(folder / "frame_001.png", value=101)
+    app.load_first_image()
+
+    assert app.roi_groups == []
+    assert app.roi1 is None and app.roi2 is None and app.field_roi is None
+    assert app.results_df is None
+    assert app.results_groups is None
+    assert app.last_qc_summary is None
+    assert app.dic_last_field is None
+    assert app.viewer_figure is None
+
+
+def test_same_folder_unchanged_refresh_preserves_roi_setup(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    folder = tmp_path / "images_unchanged"
+    load_two_frame_sequence(app, folder, tmp_path / "out_unchanged")
+    add_basic_roi_group(app)
+    before = [dict(group) for group in app.roi_groups]
+    app.load_first_image()
+    assert app.roi_groups == before
+
+
+def test_fullfield_all_nan_processing_fails_without_export_or_completion(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "showinfo", lambda *args, **kwargs: pytest.fail("must not show completion"))
+    folder = tmp_path / "images_fullfield_all_nan"
+    folder.mkdir()
+    write_test_image(folder / "frame_001.png", value=50, shape=(100, 140))
+    write_test_image(folder / "frame_002.png", value=80, shape=(100, 140))
+    app.image_folder.set(str(folder))
+    app.output_folder.set(str(tmp_path / "out_fullfield_all_nan"))
+    app.load_first_image()
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    app.field_roi = (10, 10, 80, 70)
+    app.field_roi_reference_frame_1based = 1
+    settings = app.build_processing_settings()
+    stale_dic = Path(settings["output_dir"]) / "dic"
+    stale_dic.mkdir(parents=True, exist_ok=True)
+    stale_file = stale_dic / "frame_0002.txt"
+    stale_file.write_text("old run\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="有限应变|有效应变"):
+        app.process_fullfield(settings)
+    current_dic = tmp_path / "out_fullfield_all_nan" / "dic"
+    assert not list(current_dic.glob("*.txt"))
+    assert not list(current_dic.glob("*.csv"))
+    assert not list(current_dic.glob("*.png"))
+    archived = list((stale_dic / "_previous_runs").rglob("frame_0002.txt"))
+    assert archived and archived[0].read_text(encoding="utf-8") == "old run\n"
+    assert not stale_file.exists()
+
+
+def test_fullfield_viewer_uses_final_image_context_and_component_switch_updates_overlay(gui_app):
+    root, app = gui_app
+    reset_gui_app(app)
+    reference = ezdic.generate_synthetic_speckle(64, 64, seed=17)
+    deformed = ezdic.warp_image_translation(reference, 0.7, -0.4)
+    field = ezdic.run_2d_dic(reference, deformed, (12, 12, 40, 40), subset_size=15, step=8)
+    app.current_fullres_img8 = np.zeros_like(reference, dtype=np.float32)
+    app.show_field_viewer(
+        field,
+        component="u",
+        image=deformed,
+        frame_1based=2,
+        filename="frame_002.png",
+        reference_frame_1based=1,
+        reference_filename="frame_001.png",
+    )
+    root.update_idletasks()
+    assert np.array_equal(np.asarray(app.dic_last_image), np.asarray(deformed))
+    assert app.dic_last_frame_1based == 2
+    assert "frame_002.png" in app.field_viewer_context_var.get()
+    first_overlay = np.asarray(app.display_img).copy()
+
+    app.dic_field_component.set("Exx")
+    app._on_field_component_change()
+    root.update_idletasks()
+    assert not np.array_equal(first_overlay, np.asarray(app.display_img))
+
+
+def test_fullfield_previous_run_archive_moves_only_ezdic_generated_files(tmp_path):
+    dic_dir = tmp_path / "dic"
+    dic_dir.mkdir()
+    generated = [
+        "frame_0002.txt",
+        "frame_0002.csv",
+        "frame_0002_u.png",
+        "frame_0002_parameters.txt",
+        "frame_0003_Exx.png",
+    ]
+    user_named_like_output = ["frame_0002_u.txt", "frame_0002_parameters.png", "notes.txt"]
+    for name in generated:
+        (dic_dir / name).write_text("generated\n", encoding="utf-8")
+    for name in user_named_like_output:
+        (dic_dir / name).write_text("keep me\n", encoding="utf-8")
+
+    archive = ezdic.archive_previous_fullfield_outputs(dic_dir)
+    assert archive.parent == dic_dir / "_previous_runs"
+    assert archive.exists()
+    assert all((dic_dir / name).exists() for name in user_named_like_output)
+    for name in generated:
+        assert not (dic_dir / name).exists()
+        assert (archive / name).exists()
+
+
+def test_fullfield_fatal_frame_is_transactionally_archived_without_root_partial_files(
+    gui_app, tmp_path, monkeypatch
+):
+    _root, app = gui_app
+    reset_gui_app(app)
+    folder = tmp_path / "images_fullfield_transaction"
+    folder.mkdir()
+    for idx in range(3):
+        write_test_image(folder / f"frame_{idx + 1:03d}.png", value=50 + idx, shape=(100, 140))
+    output_dir = tmp_path / "out_fullfield_transaction"
+    app.image_folder.set(str(folder))
+    app.output_folder.set(str(output_dir))
+    app.load_first_image()
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    app.field_roi = (10, 10, 80, 70)
+    app.field_roi_reference_frame_1based = 1
+    settings = app.build_processing_settings()
+
+    dic_dir = output_dir / "dic"
+    dic_dir.mkdir(parents=True, exist_ok=True)
+    old_root = dic_dir / "frame_0002.txt"
+    old_root.write_text("previous run\n", encoding="utf-8")
+    calls = []
+
+    fake_field = {
+        "valid": np.ones(9, dtype=bool),
+        "u": np.zeros(9),
+        "v": np.zeros(9),
+        "Exx": np.zeros(9),
+        "Eyy": np.zeros(9),
+        "Exy": np.zeros(9),
+    }
+
+    def fake_run(*_args, **_kwargs):
+        calls.append(True)
+        if len(calls) == 2:
+            raise RuntimeError("fatal solver failure")
+        return dict(fake_field)
+
+    def fake_export(field, output_path, *, stem="dic_field", preset_name="publication"):
+        del field, preset_name
+        path = Path(output_path) / f"{stem}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("partial current run\n", encoding="utf-8")
+        return {"txt": path}
+
+    monkeypatch.setattr(ezdic, "run_2d_dic", fake_run)
+    monkeypatch.setattr(ezdic, "export_dic_field_outputs", fake_export)
+
+    with pytest.raises(RuntimeError, match="fatal solver failure"):
+        app.process_fullfield(settings)
+
+    previous = list((dic_dir / "_previous_runs").rglob("frame_0002.txt"))
+    failed = list((dic_dir / "_failed_runs").rglob("frame_0002.txt"))
+    assert previous and previous[0].read_text(encoding="utf-8") == "previous run\n"
+    assert failed and failed[0].read_text(encoding="utf-8") == "partial current run\n"
+    assert not old_root.exists()
+    assert not list(dic_dir.glob("frame_*.txt"))
+
+
+def test_fullfield_partial_valid_run_commits_only_valid_staged_frames(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    folder = tmp_path / "images_fullfield_partial_valid"
+    folder.mkdir()
+    for idx in range(3):
+        write_test_image(folder / f"frame_{idx + 1:03d}.png", value=50 + idx, shape=(100, 140))
+    output_dir = tmp_path / "out_fullfield_partial_valid"
+    app.image_folder.set(str(folder))
+    app.output_folder.set(str(output_dir))
+    app.load_first_image()
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    app.field_roi = (10, 10, 80, 70)
+    app.field_roi_reference_frame_1based = 1
+    settings = app.build_processing_settings()
+
+    calls = []
+    fake_valid = {
+        "valid": np.ones(9, dtype=bool),
+        "u": np.zeros(9),
+        "v": np.zeros(9),
+        "Exx": np.zeros(9),
+        "Eyy": np.zeros(9),
+        "Exy": np.zeros(9),
+    }
+    fake_invalid = {
+        "valid": np.zeros(9, dtype=bool),
+        "u": np.full(9, np.nan),
+        "v": np.full(9, np.nan),
+        "Exx": np.full(9, np.nan),
+        "Eyy": np.full(9, np.nan),
+        "Exy": np.full(9, np.nan),
+    }
+
+    def fake_run(*_args, **_kwargs):
+        calls.append(True)
+        return dict(fake_invalid if len(calls) == 1 else fake_valid)
+
+    def fake_export(field, output_path, *, stem="dic_field", preset_name="publication"):
+        del field, preset_name
+        path = Path(output_path) / f"{stem}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("committed valid frame\n", encoding="utf-8")
+        return {"txt": path}
+
+    monkeypatch.setattr(ezdic, "run_2d_dic", fake_run)
+    monkeypatch.setattr(ezdic, "export_dic_field_outputs", fake_export)
+    app.process_fullfield(settings)
+
+    dic_dir = output_dir / "dic"
+    assert (dic_dir / "frame_0003.txt").exists()
+    assert not (dic_dir / "frame_0002.txt").exists()
+    assert not list(dic_dir.glob(".staging*"))
+
+
+def test_fullfield_preflight_blocks_narrow_roi_without_three_by_three_grid(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    load_two_frame_sequence(app, tmp_path / "images_narrow_ff", tmp_path / "out_narrow_ff")
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    app.field_roi = (10, 10, 30, 30)
+    app.field_roi_reference_frame_1based = 1
+    app.dic_subset_size.set(21)
+    app.dic_step.set(10)
+
+    items = app.build_preflight_items()
+    assert any(item["level"] == "block" and item["label"] == "POI 网格" for item in items)
+    with pytest.raises(RuntimeError, match="3×3|POI"):
+        app.validate_fullfield_before_processing()
+
+
+def test_fullfield_settings_ignore_invalid_hidden_1d_parameters(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    load_two_frame_sequence(app, tmp_path / "images_hidden_1d", tmp_path / "out_hidden_1d")
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    app.field_roi = (10, 10, 80, 70)
+    app.field_roi_reference_frame_1based = 1
+    for variable, value in [
+        (app.search_radius, "not-an-int"),
+        (app.hard_corr, "not-a-float"),
+        (app.soft_corr, "not-a-float"),
+        (app.template_alpha, "not-a-float"),
+        (app.fb_tolerance_px, "not-a-float"),
+        (app.overlay_every, "not-an-int"),
+        (app.max_frame_strain_jump, "not-a-float"),
+        (app.pixel_size_mm, "not-a-float"),
+    ]:
+        variable.set(value)
+
+    settings = app.build_processing_settings()
+    assert settings["analysis_mode"] == ezdic.ANALYSIS_MODE_FULLFIELD
+    assert settings["field_roi"] == (10, 10, 80, 70)
+    assert settings["dic_subset_size"] == 21
+
+
+def test_fullfield_overlay_checkbox_and_workflow_steps_are_visible_and_mode_specific(gui_app):
+    root, app = gui_app
+    reset_gui_app(app)
+    checkbox = app.fullfield_export_overlays_checkbutton
+    assert "overlay" in checkbox.cget("text").lower()
+    assert app.fullfield_export_info_frame.grid_info() == {}
+
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    root.update_idletasks()
+    assert app.fullfield_export_info_frame.grid_info()
+    fullfield_text = app.workflow_steps_label.cget("text")
+    assert "全场 ROI" in fullfield_text
+    assert "u/v" in fullfield_text
+
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_EXTENSOMETER)
+    app.set_analysis_mode()
+    root.update_idletasks()
+    assert app.fullfield_export_info_frame.grid_info() == {}
+    assert "ROI1/ROI2" in app.workflow_steps_label.cget("text")
+
+
+def test_processing_rejects_duplicate_start_while_completion_is_pending(gui_app, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    app._completion_pending = True
+    messages = []
+    monkeypatch.setattr(ezdic.messagebox, "showinfo", lambda title, message: messages.append((title, message)))
+    app.start_processing()
+    assert messages
+    assert "完成" in messages[-1][1] or "等待" in messages[-1][1]
+
+
+def test_constant_texture_tracking_is_rejected_and_strain_stays_nan(gui_app):
+    _root, app = gui_app
+    reset_gui_app(app)
+    app.first_img8 = np.full((100, 140), 80, dtype=np.uint8)
+    app.current_preview_index = 0
+    app.start_frame_1based.set(1)
+    app.roi1 = (10, 10, 30, 30)
+    app.roi2 = (80, 10, 30, 30)
+    app.strain_mode.set("x")
+    app.sync_strain_mode_display()
+    group = app.make_group_from_current("flat")
+    state = app.init_group_states(app.first_img8, [group])[0]
+    params = {
+        "search_radius_base": 10,
+        "hard_corr": 0.55,
+        "soft_corr": 0.35,
+        "enable_adaptive": True,
+        "use_prev_frame_template": True,
+        "template_alpha": 0.7,
+        "max_frame_jump": 0.01,
+        "enable_fb_check": True,
+        "fb_tolerance": 12.0,
+        "pixel_size_mm": None,
+    }
+
+    row0, _ = app.process_one_group_one_frame(state, app.first_img8, 0, "flat_001.png", params)
+    row1, _ = app.process_one_group_one_frame(state, app.first_img8, 1, "flat_002.png", params)
+    assert row0["accepted"] is False
+    assert row0["accept_mode"] == "rejected"
+    assert np.isnan(row0["engineering_strain"])
+    assert row1["accepted"] is False
+    assert np.isnan(row1["engineering_strain"])
+
+
+def test_overlay_write_failure_is_reported(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
+    folder = tmp_path / "images_write_failure"
+    folder.mkdir()
+    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    for idx in range(2):
+        arr = np.full((100, 160), 30, dtype=np.uint8)
+        arr[30:60, 20 + idx:50 + idx] = patch
+        arr[30:60, 90 + idx:120 + idx] = patch
+        ok, data = cv2.imencode(".png", arr)
+        assert ok
+        data.tofile(str(folder / f"frame_{idx:03d}.png"))
+    app.image_folder.set(str(folder))
+    app.output_folder.set(str(tmp_path / "out_write_failure"))
+    app.load_first_image()
+    app.roi1 = (20, 30, 30, 30)
+    app.roi2 = (90, 30, 30, 30)
+    app.strain_mode.set("x")
+    app.sync_strain_mode_display()
+    app.add_current_group()
+    app.export_origin_txt.set(False)
+    app.export_engineering_png.set(False)
+    app.export_qc_summary.set(False)
+    app.export_overlays.set(True)
+    app.overlay_every.set(1)
+    monkeypatch.setattr(ezdic.cv2, "imencode", lambda *_args, **_kwargs: (False, None))
+
+    with pytest.raises(RuntimeError, match="写入图像失败"):
+        app.process_images(app.build_processing_settings())

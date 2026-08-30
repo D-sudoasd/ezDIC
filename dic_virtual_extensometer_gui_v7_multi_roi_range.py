@@ -37,8 +37,10 @@ import math
 import glob
 import json
 import queue
+import shutil
 import threading
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -179,7 +181,7 @@ from PIL import Image, ImageTk
 
 
 APP_NAME = "ezDIC"
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 APP_DEVELOPER = "Dr. Delun Gong"
 APP_DOI = "10.5281/zenodo.20222465"
 APP_DOI_URL = f"https://doi.org/{APP_DOI}"
@@ -328,6 +330,23 @@ def open_output_folder(path):
     os.startfile(str(folder))
 
 
+def write_image_checked(path, image):
+    """Write an image through an encoded buffer, preserving Unicode paths."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    extension = path.suffix.lower() or ".png"
+    try:
+        ok, encoded = cv2.imencode(extension, np.asarray(image))
+        if not ok or encoded is None:
+            raise RuntimeError("OpenCV 编码失败")
+        encoded.tofile(str(path))
+    except Exception as exc:
+        raise RuntimeError(f"写入图像失败：{path}（{exc}）") from exc
+    if not ok or not path.exists() or path.stat().st_size <= 0:
+        raise RuntimeError(f"写入图像失败：{path}")
+    return path
+
+
 class ToolTip:
     def __init__(self, widget, text, wraplength=360, delay_ms=450):
         self.widget = widget
@@ -427,6 +446,137 @@ def collect_images(folder):
     for ext in IMAGE_EXTENSIONS:
         paths.extend(glob.glob(os.path.join(folder, ext)))
     return sorted(list(set(paths)), key=natural_sort_key)
+
+
+def image_sequence_fingerprint(paths):
+    """Stable sequence identity based on normalized paths and file metadata."""
+    fingerprint = []
+    for raw_path in paths or []:
+        path = Path(raw_path)
+        try:
+            stat = path.stat()
+            fingerprint.append(
+                (
+                    os.path.normcase(os.path.abspath(str(path))),
+                    int(stat.st_size),
+                    int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9))),
+                )
+            )
+        except OSError:
+            fingerprint.append((os.path.normcase(os.path.abspath(str(path))), None, None))
+    return tuple(fingerprint)
+
+
+FULLFIELD_GENERATED_FILE_RE = re.compile(
+    r"^(?:"
+    r"frame_\d{4}\.(?:txt|csv)|"
+    r"frame_\d{4}_(?:u|v|Exx|Eyy|Exy|overlay)\.png|"
+    r"frame_\d{4}_parameters\.txt"
+    r")$",
+    flags=re.IGNORECASE,
+)
+
+
+def _create_unique_timestamped_dir(root, *, prefix=None):
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    name = f"{prefix}_{timestamp}" if prefix else timestamp
+    candidate = root / name
+    suffix = 1
+    while candidate.exists():
+        candidate = root / f"{name}_{suffix:02d}"
+        suffix += 1
+    candidate.mkdir()
+    return candidate
+
+
+def _atomic_move_entries(entries, label, *, after_move=None):
+    """Move exact file entries with best-effort inverse moves on failure."""
+    normalized_entries = [(Path(source), Path(destination)) for source, destination in entries]
+    moved = []
+    try:
+        for source, destination in normalized_entries:
+            shutil.move(str(source), str(destination))
+            moved.append((source, destination))
+        if after_move is not None:
+            after_move()
+    except Exception as exc:
+        rollback_errors = []
+        for source, destination in reversed(moved):
+            if not destination.exists():
+                continue
+            try:
+                shutil.move(str(destination), str(source))
+            except Exception as rollback_exc:
+                # Path.replace bypasses a transient shutil failure while
+                # remaining confined to the exact generated destination.
+                try:
+                    destination.replace(source)
+                except Exception as replace_exc:
+                    rollback_errors.append(
+                        f"{destination} -> {source}: {rollback_exc}; fallback: {replace_exc}"
+                    )
+        detail = f"{label}失败：{exc}"
+        if rollback_errors:
+            detail += "；回滚失败：" + " | ".join(rollback_errors)
+        raise RuntimeError(detail) from exc
+
+
+def archive_previous_fullfield_outputs(dic_dir):
+    """Move only known ezDIC frame outputs into a timestamped archive."""
+    dic_dir = Path(dic_dir)
+    if not dic_dir.exists() or not dic_dir.is_dir():
+        return None
+    previous_files = [
+        path
+        for path in dic_dir.iterdir()
+        if path.is_file() and FULLFIELD_GENERATED_FILE_RE.fullmatch(path.name)
+    ]
+    if not previous_files:
+        return None
+
+    archive_dir = _create_unique_timestamped_dir(dic_dir / "_previous_runs")
+    entries = [(path, archive_dir / path.name) for path in sorted(previous_files, key=lambda p: p.name)]
+    try:
+        _atomic_move_entries(entries, "全场旧结果归档")
+    except Exception:
+        # A failed archive leaves the original root files restored.  Remove
+        # only the now-empty timestamp directory; non-empty diagnostics stay.
+        try:
+            archive_dir.rmdir()
+        except OSError:
+            pass
+        raise
+    return archive_dir
+
+
+def commit_fullfield_staging(staging_dir, dic_dir):
+    """Commit verified staged files into the full-field output root."""
+    staging_dir = Path(staging_dir)
+    dic_dir = Path(dic_dir)
+    dic_dir.mkdir(parents=True, exist_ok=True)
+    entries = sorted(staging_dir.iterdir(), key=lambda p: p.name)
+    move_entries = []
+    for entry in entries:
+        destination = dic_dir / entry.name
+        if destination.exists():
+            raise RuntimeError(f"全场输出提交目标已存在：{destination}")
+        move_entries.append((entry, destination))
+    _atomic_move_entries(move_entries, "全场输出提交", after_move=staging_dir.rmdir)
+    return dic_dir
+
+
+def archive_failed_fullfield_staging(staging_dir, dic_dir):
+    """Retain a failed run's staging contents under a unique failure archive."""
+    staging_dir = Path(staging_dir)
+    if not staging_dir.exists():
+        return None
+    failed_dir = _create_unique_timestamped_dir(Path(dic_dir) / "_failed_runs")
+    entries = sorted(staging_dir.iterdir(), key=lambda p: p.name)
+    move_entries = [(entry, failed_dir / entry.name) for entry in entries]
+    _atomic_move_entries(move_entries, "全场失败运行归档", after_move=staging_dir.rmdir)
+    return failed_dir
 
 
 def read_gray_image(path):
@@ -621,6 +771,21 @@ def texture_is_ok(metrics, min_std, min_contrast, max_saturated_frac):
     return True
 
 
+def has_nonzero_variance(values, *, min_std=1e-8):
+    """Return whether an image/template patch has finite, usable contrast.
+
+    OpenCV's ``TM_CCOEFF_NORMED`` is undefined for a constant template or
+    candidate patch and can return a misleading score of 1.0.  Keep this
+    check independent of OpenCV so all normalized-correlation entry points
+    share the same scientific rejection rule.
+    """
+    arr = np.asarray(values, dtype=np.float64)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return False
+    return bool(float(np.std(finite)) > float(min_std))
+
+
 def subpixel_peak(corr, px, py):
     H, W = corr.shape
     dx = 0.0
@@ -666,11 +831,26 @@ def match_template_candidate(img8, last_rect, template, search_radius):
     if template.shape[0] != h or template.shape[1] != w:
         return last_rect, -1.0
 
+    # TM_CCOEFF_NORMED is undefined for constant inputs.  OpenCV may report
+    # a perfect score for these patches, so reject before calling it and also
+    # validate the selected candidate window below.
+    if not has_nonzero_variance(template) or not has_nonzero_variance(search_img):
+        return last_rect, -1.0
+
     corr = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, max_loc = cv2.minMaxLoc(corr)
+    finite_corr = np.isfinite(corr)
+    if not finite_corr.any():
+        return last_rect, -1.0
+    safe_corr = np.where(finite_corr, corr, -1.0).astype(np.float32, copy=False)
+    _, max_val, _, max_loc = cv2.minMaxLoc(safe_corr)
+    if not np.isfinite(max_val):
+        return last_rect, -1.0
 
     px, py = max_loc
-    dx, dy = subpixel_peak(corr, px, py)
+    candidate_patch = search_img[py : py + h, px : px + w]
+    if candidate_patch.shape != template.shape or not has_nonzero_variance(candidate_patch):
+        return last_rect, -1.0
+    dx, dy = subpixel_peak(safe_corr, px, py)
 
     new_x = sx1 + px + dx
     new_y = sy1 + py + dy
@@ -708,6 +888,8 @@ def forward_backward_error(prev_img8, curr_img8, prev_rect, curr_candidate_rect,
         curr_patch,
         search_radius=search_radius,
     )
+    if back_score < 0 or not np.isfinite(back_score):
+        return float("inf"), float(back_score)
     err = center_distance(back_rect, prev_rect)
     return float(err), float(back_score)
 
@@ -927,10 +1109,78 @@ def build_poi_grid(roi, subset_size, step, image_shape):
     return X, Y
 
 
+def poi_grid_is_usable(X, Y, *, min_rows=3, min_cols=3):
+    """Return whether a POI grid can support a 2-D affine strain fit."""
+    X = np.asarray(X)
+    Y = np.asarray(Y)
+    if X.ndim != 2 or Y.ndim != 2 or X.shape != Y.shape:
+        return False
+    rows, cols = X.shape
+    return bool(rows >= int(min_rows) and cols >= int(min_cols) and X.size > 0 and Y.size > 0)
+
+
+def _odd_window_size(window):
+    size = max(3, int(window))
+    if size % 2 == 0:
+        size += 1
+    return size
+
+
+def rect_is_inside_image(rect, image_shape):
+    """Return whether a positive rectangular ROI is fully inside an image."""
+    if rect is None or image_shape is None:
+        return False
+    try:
+        x, y, w, h = (int(round(value)) for value in rect)
+        H, W = (int(value) for value in image_shape[:2])
+    except (TypeError, ValueError, IndexError):
+        return False
+    return bool(x >= 0 and y >= 0 and w > 0 and h > 0 and x + w <= W and y + h <= H)
+
+
+def validate_image_sequence_dimensions(paths):
+    """Read a sequence and reject frames whose 2-D image dimensions differ."""
+    paths = list(paths or [])
+    if not paths:
+        raise RuntimeError("全场 DIC 没有可读取的图像帧。")
+    reference_shape = tuple(read_gray_image(paths[0]).shape[:2])
+    for path in paths[1:]:
+        shape = tuple(read_gray_image(path).shape[:2])
+        if shape != reference_shape:
+            raise RuntimeError(
+                "全场 DIC 要求所有图像尺寸一致："
+                f"参考帧 {reference_shape[1]}×{reference_shape[0]} px，"
+                f"{Path(path).name} 为 {shape[1]}×{shape[0]} px。"
+            )
+    return reference_shape
+
+
+def fullfield_field_has_finite_strain(field):
+    """Check that a DIC frame contains at least one valid finite strain point."""
+    valid = np.asarray(field.get("valid", []), dtype=bool).ravel()
+    if valid.size == 0 or not valid.any():
+        return False
+    try:
+        finite_strain = (
+            np.isfinite(np.asarray(field["Exx"], dtype=float).ravel())
+            & np.isfinite(np.asarray(field["Eyy"], dtype=float).ravel())
+            & np.isfinite(np.asarray(field["Exy"], dtype=float).ravel())
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    if finite_strain.size != valid.size:
+        return False
+    return bool(np.any(valid & finite_strain))
+
+
 def integer_cc_guess(reference, deformed, x, y, subset_size, search_radius):
     """Integer template-match (OpenCV ZNCC) plus quadratic sub-pixel peak."""
     reference = _as_float_image(reference)
     deformed = _as_float_image(deformed)
+    if reference.shape != deformed.shape:
+        raise ValueError(
+            "reference and deformed image dimensions must match for full-field DIC."
+        )
     subset_size = _odd_subset_size(subset_size)
     half = subset_size // 2
     H, W = reference.shape[:2]
@@ -946,10 +1196,21 @@ def integer_cc_guess(reference, deformed, x, y, subset_size, search_radius):
     search = deformed[sy1:sy2, sx1:sx2]
     if search.shape[0] < tpl.shape[0] or search.shape[1] < tpl.shape[1]:
         return 0.0, 0.0, -1.0
+    if not has_nonzero_variance(tpl) or not has_nonzero_variance(search):
+        return 0.0, 0.0, -1.0
     corr = cv2.matchTemplate(search, tpl, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, max_loc = cv2.minMaxLoc(corr)
+    finite_corr = np.isfinite(corr)
+    if not finite_corr.any():
+        return 0.0, 0.0, -1.0
+    safe_corr = np.where(finite_corr, corr, -1.0).astype(np.float32, copy=False)
+    _, max_val, _, max_loc = cv2.minMaxLoc(safe_corr)
+    if not np.isfinite(max_val):
+        return 0.0, 0.0, -1.0
     px, py = max_loc
-    dx, dy = subpixel_peak(corr, px, py)
+    candidate_patch = search[py : py + tpl.shape[0], px : px + tpl.shape[1]]
+    if candidate_patch.shape != tpl.shape or not has_nonzero_variance(candidate_patch):
+        return 0.0, 0.0, -1.0
+    dx, dy = subpixel_peak(safe_corr, px, py)
     u = (sx1 + px + dx) - (ix - half)
     v = (sy1 + py + dy) - (iy - half)
     return float(u), float(v), float(max_val)
@@ -1001,6 +1262,8 @@ def _refine_subset_ic(
     if ix - half < 0 or iy - half < 0 or ix + half >= Wimg or iy + half >= Himg:
         return None
     f = reference[iy - half : iy + half + 1, ix - half : ix + half + 1].astype(np.float64)
+    if not np.isfinite(f).all() or not has_nonzero_variance(f):
+        return None
     fy, fx = np.gradient(f)
     f_tilde = f - f.mean()
     f_norm = float(np.sqrt(np.sum(f_tilde * f_tilde)))
@@ -1037,7 +1300,7 @@ def _refine_subset_ic(
         ).astype(np.float64)
         g_tilde = g - g.mean()
         g_norm = float(np.sqrt(np.sum(g_tilde * g_tilde)))
-        if g_norm < 1e-8:
+        if not np.isfinite(g).all() or g_norm < 1e-8:
             break
         gn = g_tilde / g_norm
         zncc = float(np.sum(fn * gn))
@@ -1127,9 +1390,7 @@ def compute_strain_fields(X, Y, U, V, *, window=5, smooth_sigma=0.0):
         V = _nan_gaussian(V, smooth_sigma)
 
     ny, nx = X.shape
-    win = max(3, int(window))
-    if win % 2 == 0:
-        win += 1
+    win = _odd_window_size(window)
     half = win // 2
     Exx = np.full((ny, nx), np.nan)
     Eyy = np.full((ny, nx), np.nan)
@@ -1156,6 +1417,8 @@ def compute_strain_fields(X, Y, U, V, *, window=5, smooth_sigma=0.0):
             if int(ok.sum()) < 6:
                 continue
             A = np.column_stack([np.ones(int(ok.sum())), xs[ok] - X[i, j], ys[ok] - Y[i, j]])
+            if np.linalg.matrix_rank(A) < 3:
+                continue
             try:
                 au, *_ = np.linalg.lstsq(A, us[ok], rcond=None)
                 av, *_ = np.linalg.lstsq(A, vs[ok], rcond=None)
@@ -1188,6 +1451,7 @@ def compute_strain_fields(X, Y, U, V, *, window=5, smooth_sigma=0.0):
         "dvdy": dvdy,
         "U": U,
         "V": V,
+        "window": win,
     }
 
 
@@ -1213,8 +1477,16 @@ def run_2d_dic(
     Failed or out-of-ROI points stay NaN (not interpolated). Strain is a windowed
     local fit of the displacement field, optionally Gaussian-smoothed first.
     """
+    requested_subset_size = int(subset_size)
+    requested_strain_window = int(strain_window)
     reference = _as_float_image(reference)
     deformed = _as_float_image(deformed)
+    if reference.shape != deformed.shape:
+        raise ValueError(
+            "reference and deformed image dimensions must match for full-field DIC."
+        )
+    if not rect_is_inside_image(roi, reference.shape):
+        raise ValueError("roi must be a positive rectangle fully inside the reference image.")
     subset_size = _odd_subset_size(subset_size)
     step = max(1, int(step))
     solver_name = str(solver).strip().upper().replace("_", "-")
@@ -1252,12 +1524,23 @@ def run_2d_dic(
                 max_iter=max_iter,
                 tol=conv_tol,
             )
-            if result is not None and result["zncc"] >= float(zncc_min) and np.isfinite(result["u"]):
+            try:
+                result_p = np.asarray(result.get("p"), dtype=float).reshape(6)
+                result_finite = (
+                    np.isfinite(result["u"])
+                    and np.isfinite(result["v"])
+                    and np.isfinite(result["zncc"])
+                    and np.isfinite(result_p).all()
+                )
+            except (AttributeError, KeyError, TypeError, ValueError):
+                result_p = None
+                result_finite = False
+            if result is not None and result_finite and result["zncc"] >= float(zncc_min):
                 U[i, j] = result["u"]
                 V[i, j] = result["v"]
                 Z[i, j] = result["zncc"]
                 valid[i, j] = True
-                P[i, j, :] = result["p"]
+                P[i, j, :] = result_p
                 u_prev, v_prev = result["u"], result["v"]
             if progress_callback is not None:
                 progress_callback(i * nx + j + 1, total)
@@ -1287,7 +1570,11 @@ def run_2d_dic(
         "roi": tuple(int(round(v)) for v in roi),
         "zncc_min": float(zncc_min),
         "smooth_sigma": float(smooth_sigma or 0.0),
-        "strain_window": int(strain_window),
+        "requested_subset_size": requested_subset_size,
+        "requested_strain_window": requested_strain_window,
+        "strain_window": int(strains["window"]),
+        "effective_subset_size": subset_size,
+        "effective_strain_window": int(strains["window"]),
         "Exx_grid": strains["Exx"],
         "Eyy_grid": strains["Eyy"],
         "Exy_grid": strains["Exy"],
@@ -1339,6 +1626,38 @@ def write_dic_field_txt(field, path):
                 cells.append(f"{float(value):.8f}")
         lines.append("\t".join(cells))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def write_dic_field_parameters(field, path):
+    """Write human-readable provenance and solver parameters for one field."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    provenance = dict(field.get("provenance") or {})
+    defaults = {
+        "analysis_mode": ANALYSIS_MODE_FULLFIELD,
+        "roi": field.get("roi"),
+        "subset_size_px": field.get("subset_size"),
+        "effective_subset_size_px": field.get("effective_subset_size", field.get("subset_size")),
+        "requested_subset_size": field.get("requested_subset_size", field.get("subset_size")),
+        "step_px": field.get("step"),
+        "solver": field.get("solver"),
+        "zncc_min": field.get("zncc_min"),
+        "strain_window": field.get("strain_window"),
+        "effective_strain_window": field.get("effective_strain_window", field.get("strain_window")),
+        "requested_strain_window": field.get("requested_strain_window", field.get("strain_window")),
+        "smooth_sigma": field.get("smooth_sigma"),
+    }
+    for key, value in defaults.items():
+        provenance.setdefault(key, value)
+
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write("ezDIC full-field DIC provenance and parameters\n")
+        handle.write("===============================================\n")
+        for key, value in provenance.items():
+            if isinstance(value, (list, tuple)):
+                value = ",".join(str(item) for item in value)
+            handle.write(f"{key} = {value}\n")
     return path
 
 
@@ -1453,7 +1772,8 @@ def export_dic_field_outputs(field, output_dir, *, stem="dic_field", preset_name
         )
     csv_path = output_dir / f"{stem}.csv"
     dic_field_to_dataframe(field).to_csv(csv_path, index=False)
-    return {"txt": table_path, "csv": csv_path, "plots": plot_paths}
+    parameters_path = write_dic_field_parameters(field, output_dir / f"{stem}_parameters.txt")
+    return {"txt": table_path, "csv": csv_path, "plots": plot_paths, "parameters": parameters_path}
 
 
 def _frame_column(df):
@@ -2197,6 +2517,7 @@ class MultiROIGUI:
 
         self.image_paths = []
         self.loaded_image_folder = None
+        self.loaded_image_sequence_fingerprint = None
         self.first_raw = None
         self.first_img8 = None  # 当前预览帧的 8-bit 图像，用于显示、画 ROI、纹理检查
         self.current_fullres_img8 = None  # 用于动态缩放的原始分辨率图
@@ -2220,7 +2541,16 @@ class MultiROIGUI:
         self.dic_zncc_min = tk.DoubleVar(value=0.75)
         self.dic_field_component = tk.StringVar(value="u")
         self.field_roi = None
+        self.roi1_reference_frame_1based = None
+        self.roi2_reference_frame_1based = None
+        self.field_roi_reference_frame_1based = None
         self.dic_last_field = None
+        self.dic_last_image = None
+        self.dic_last_frame_1based = None
+        self.dic_last_filename = None
+        self.dic_last_reference_frame_1based = None
+        self.dic_last_reference_filename = None
+        self.field_viewer_context_var = tk.StringVar(value="")
         self._viewer_kind = "extensometer"
 
         # 图像缩放状态
@@ -2249,6 +2579,10 @@ class MultiROIGUI:
         self.group_name_var = tk.StringVar(value="")
 
         self.is_processing = False
+        self._completion_pending = False
+        self._run_generation = 0
+        self._active_run_token = None
+        self._worker_context = threading.local()
         self.tooltips = []
         self.ui_queue = queue.Queue()
 
@@ -2284,9 +2618,19 @@ class MultiROIGUI:
         for var in [
             self.start_frame_1based,
             self.end_frame_1based,
+            self.preview_frame_1based,
             self.strain_mode,
             self.roi_role,
             *self._export_option_vars(),
+            self.image_folder,
+            self.output_folder,
+            self.dic_subset_size,
+            self.dic_step,
+            self.dic_solver,
+            self.dic_strain_window,
+            self.dic_smooth_sigma,
+            self.dic_search_radius,
+            self.dic_zncc_min,
         ]:
             var.trace_add("write", self._on_gui_state_change)
 
@@ -2474,39 +2818,80 @@ class MultiROIGUI:
         elif start is not None and end is not None:
             items.append(self._preflight_item("ok", "分析范围", f"第 {start} 到 {end} 帧。"))
 
-        if self.is_fullfield_mode():
-            field_roi = self.field_roi or self.roi1
-            if field_roi is not None:
+        is_ff = self.is_fullfield_mode()
+        if is_ff:
+            field_roi = self.field_roi
+            if field_roi is None:
+                items.append(self._preflight_item("block", "全场 ROI", "请在参考帧拖出全场分析 ROI。"))
+            elif has_sequence and not rect_is_inside_image(field_roi, self.first_img8.shape):
+                items.append(self._preflight_item("block", "全场 ROI", "全场 ROI 必须完整位于参考图像内。"))
+            else:
                 x, y, w, h = field_roi
                 items.append(self._preflight_item("ok", "全场 ROI", f"ROI {w}×{h} px @ ({x},{y})。"))
-            else:
-                items.append(self._preflight_item("block", "全场 ROI", "请在参考帧拖出全场分析 ROI。"))
+
+            if field_roi is not None and start is not None:
+                field_ref = self.field_roi_reference_frame_1based
+                if field_ref is None:
+                    items.append(
+                        self._preflight_item(
+                            "block",
+                            "参考帧",
+                            "全场 ROI 缺少绘制参考帧记录，请在当前起始/参考帧重画。",
+                        )
+                    )
+                elif int(field_ref) != start:
+                    items.append(
+                        self._preflight_item(
+                            "block",
+                            "参考帧",
+                            f"全场 ROI 在第 {field_ref} 帧定义，但当前起始/参考帧为第 {start} 帧，请重画全场 ROI。",
+                        )
+                    )
+                else:
+                    items.append(self._preflight_item("ok", "参考帧", "全场 ROI 与当前起始/参考帧一致。"))
+
             try:
                 subset = int(self.dic_subset_size.get())
                 step = int(self.dic_step.get())
+                window = int(self.dic_strain_window.get())
                 solver = str(self.dic_solver.get())
+                smooth_sigma = float(self.dic_smooth_sigma.get())
                 if subset < 9:
                     items.append(self._preflight_item("block", "子集尺寸", "子集尺寸必须 >= 9。"))
+                elif subset % 2 == 0:
+                    items.append(self._preflight_item("block", "子集尺寸", "子集尺寸必须为奇数；当前偶数值会改变实际窗口。"))
                 elif step < 1:
                     items.append(self._preflight_item("block", "步长", "步长必须 >= 1。"))
+                elif window < 3:
+                    items.append(self._preflight_item("block", "应变窗口", "应变窗口必须 >= 3。"))
+                elif window % 2 == 0:
+                    items.append(self._preflight_item("block", "应变窗口", "应变窗口必须为奇数；当前偶数值会改变实际窗口。"))
+                elif smooth_sigma < 0:
+                    items.append(self._preflight_item("block", "高斯平滑", "高斯平滑 σ 不能为负。"))
                 elif solver not in DIC_SOLVERS:
                     items.append(self._preflight_item("block", "求解器", "请选择 IC-GN 或 IC-LM。"))
-                else:
-                    items.append(
-                        self._preflight_item(
-                            "ok",
-                            "DIC 参数",
-                            f"subset={subset}, step={step}, {solver}。",
+                elif field_roi is not None and has_sequence:
+                    X, Y = build_poi_grid(field_roi, subset, step, self.first_img8.shape)
+                    if not poi_grid_is_usable(X, Y, min_rows=3, min_cols=3):
+                        items.append(self._preflight_item("block", "POI 网格", "当前 ROI / 子集 / 步长至少需要 3×3 个可分析的 2D POI。"))
+                    else:
+                        items.append(
+                            self._preflight_item(
+                                "ok",
+                                "DIC 参数",
+                                f"subset={subset} px, step={step} px, window={window}, {solver}；POI={X.size}。",
+                            )
                         )
-                    )
+                else:
+                    items.append(self._preflight_item("ok", "DIC 参数", f"subset={subset} px, step={step} px, window={window}, {solver}。"))
             except (tk.TclError, TypeError, ValueError):
-                items.append(self._preflight_item("block", "DIC 参数", "子集尺寸和步长必须是整数。"))
+                items.append(self._preflight_item("block", "DIC 参数", "子集、步长、应变窗口和高斯平滑必须是有效数字。"))
         elif self.roi_groups:
             items.append(self._preflight_item("ok", "ROI 组", f"已添加 {len(self.roi_groups)} 组。"))
         else:
             items.append(self._preflight_item("block", "ROI 组", "请至少添加一组 ROI1/ROI2。"))
 
-        if (not self.is_fullfield_mode()) and self.roi_groups and start is not None:
+        if (not is_ff) and self.roi_groups and start is not None:
             mismatched = [
                 g["name"]
                 for g in self.roi_groups
@@ -2523,7 +2908,7 @@ class MultiROIGUI:
             else:
                 items.append(self._preflight_item("ok", "参考帧", "ROI 组与当前起始/参考帧一致。"))
 
-        if (not self.is_fullfield_mode()) and self.roi_groups:
+        if (not is_ff) and self.roi_groups:
             invalid_l0 = [g["name"] for g in self.roi_groups if g.get("L0", 0) <= 0 or not np.isfinite(float(g.get("L0", np.nan)))]
             small_l0 = [g for g in self.roi_groups if g.get("L0", 0) > 0 and g.get("L0", 0) < 50]
             if invalid_l0:
@@ -2541,19 +2926,20 @@ class MultiROIGUI:
             else:
                 items.append(self._preflight_item("ok", "应变方向", "方向已解析为 " + ", ".join(actual_modes) + "。"))
 
-        try:
-            poisson_enabled = validate_poisson_role_groups(self.roi_groups)
-        except RuntimeError as exc:
-            items.append(self._preflight_item("warn", "泊松比角色", str(exc).replace("\n", " ")))
-        else:
-            if poisson_enabled:
-                axial, transverse = get_poisson_role_groups(self.roi_groups)
-                if axial and transverse and axial[0].get("actual_mode") == transverse[0].get("actual_mode"):
-                    items.append(self._preflight_item("warn", "泊松比角色", "轴向和横向组的 actual_mode 相同，请复核方向。"))
-                else:
-                    items.append(self._preflight_item("ok", "泊松比角色", "轴向/横向角色已成对配置。"))
+        if not is_ff:
+            try:
+                poisson_enabled = validate_poisson_role_groups(self.roi_groups)
+            except RuntimeError as exc:
+                items.append(self._preflight_item("warn", "泊松比角色", str(exc).replace("\n", " ")))
             else:
-                items.append(self._preflight_item("ok", "泊松比角色", "未启用泊松比导出角色。"))
+                if poisson_enabled:
+                    axial, transverse = get_poisson_role_groups(self.roi_groups)
+                    if axial and transverse and axial[0].get("actual_mode") == transverse[0].get("actual_mode"):
+                        items.append(self._preflight_item("warn", "泊松比角色", "轴向和横向组的 actual_mode 相同，请复核方向。"))
+                    else:
+                        items.append(self._preflight_item("ok", "泊松比角色", "轴向/横向角色已成对配置。"))
+                else:
+                    items.append(self._preflight_item("ok", "泊松比角色", "未启用泊松比导出角色。"))
 
         output_text = self.output_folder.get().strip()
         if not output_text:
@@ -2565,7 +2951,9 @@ class MultiROIGUI:
             else:
                 items.append(self._preflight_item("ok", "输出目录", str(output_path)))
 
-        if self.has_any_export_option():
+        if is_ff:
+            items.append(self._preflight_item("ok", "全场输出", "固定输出 TXT/CSV 与 u/v/Exx/Eyy/Exy PNG；overlay 可选。"))
+        elif self.has_any_export_option():
             items.append(self._preflight_item("ok", "导出选项", "至少已选择一种导出内容。"))
         else:
             items.append(self._preflight_item("block", "导出选项", "请至少选择一种导出内容。"))
@@ -2595,6 +2983,13 @@ class MultiROIGUI:
         return f"{status}(std={metrics['std_gray']:.1f}, P95-P5={metrics['contrast_p95_p5']:.1f})"
 
     def build_current_roi_summary(self):
+        if self.is_fullfield_mode():
+            if self.field_roi is None:
+                return "尚未绘制全场 ROI。请在当前参考帧上拖出矩形分析区域。"
+            x, y, w, h = self.field_roi
+            ref = self.field_roi_reference_frame_1based
+            ref_text = f"；参考帧={ref}" if ref is not None else "；参考帧未记录"
+            return f"全场 ROI {w}×{h} px @ ({x},{y}){ref_text}。"
         if self.roi1 is None and self.roi2 is None:
             return "尚未绘制 ROI。请在参考帧上依次绘制 ROI1 和 ROI2。"
         if self.roi1 is None:
@@ -2773,7 +3168,14 @@ class MultiROIGUI:
         """当暗色模式切换时，重新绘制当前结果预览图以匹配新主题。"""
         if getattr(self, "_viewer_kind", "extensometer") == "fullfield" and getattr(self, "dic_last_field", None) is not None:
             try:
-                self.show_field_viewer(self.dic_last_field)
+                self.show_field_viewer(
+                    self.dic_last_field,
+                    image=self.dic_last_image,
+                    frame_1based=self.dic_last_frame_1based,
+                    filename=self.dic_last_filename,
+                    reference_frame_1based=self.dic_last_reference_frame_1based,
+                    reference_filename=self.dic_last_reference_filename,
+                )
             except Exception:
                 pass
             return
@@ -2968,8 +3370,11 @@ class MultiROIGUI:
         self.workflow_labels = []
         self.workflow_steps_label = ttk.Label(
             self.workflow_guide_frame,
-            text="1→4",
+            text=self._visible_workflow_steps_text(),
             style="Hint.TLabel",
+            font=(UI_FONT_FAMILY, 9),
+            justify=tk.LEFT,
+            wraplength=330,
         )
         self.workflow_steps_label.grid(row=0, column=0, sticky="nw", padx=(0, 6))
         self.workflow_labels.append(self.workflow_steps_label)
@@ -3002,6 +3407,12 @@ class MultiROIGUI:
         wrap = max(int(width) - 48, 220)
         if hasattr(self, "workflow_hint_label"):
             self.workflow_hint_label.configure(wraplength=wrap)
+
+    def _visible_workflow_steps_text(self):
+        """Compact, genuinely visible four-step summary for the current mode."""
+        if str(self.analysis_mode.get()) == ANALYSIS_MODE_FULLFIELD:
+            return "1. 加载图像/输出 · 2. 参考帧与范围\n3. 全场 ROI + DIC 参数 · 4. 分析并查看 u/v/应变"
+        return "1. 加载图像/输出 · 2. 参考帧/范围/方向\n3. 画 ROI1/ROI2 + 分组 · 4. 导出并开始分析"
 
     def _build_measure_section(self, parent):
         mode_bar = ttk.Frame(parent, style="Card.TFrame")
@@ -3126,6 +3537,7 @@ class MultiROIGUI:
         )
 
         measure_core = ttk.LabelFrame(self.measure_frame, text="应变与追踪", padding=(6, 4))
+        self.measure_core_frame = measure_core
         measure_core.grid(row=1, column=0, sticky="ew")
         measure_core.columnconfigure(1, weight=1)
 
@@ -3304,10 +3716,32 @@ class MultiROIGUI:
                 self.fullfield_frame.grid()
             else:
                 self.fullfield_frame.grid_remove()
+        # The frame range is shared.  All 1-D-only controls stay hidden in
+        # full-field mode so stale ROI/export settings cannot look actionable.
+        if hasattr(self, "measure_core_frame"):
+            if is_ff:
+                self.measure_core_frame.grid_remove()
+                self.advanced_toggle_btn.grid_remove()
+                self.advanced_frame.grid_remove()
+            else:
+                self.measure_core_frame.grid()
+                self.advanced_toggle_btn.grid()
+                if self.advanced_visible.get():
+                    self.advanced_frame.grid()
+        if hasattr(self, "roi_group_frame"):
+            (self.roi_group_frame.grid_remove if is_ff else self.roi_group_frame.grid)()
+        if hasattr(self, "export_frame"):
+            (self.export_frame.grid_remove if is_ff else self.export_frame.grid)()
+        if hasattr(self, "fullfield_export_info_frame"):
+            (self.fullfield_export_info_frame.grid if is_ff else self.fullfield_export_info_frame.grid_remove)()
         if is_ff:
             self.current_roi_index = 1
             if hasattr(self, "status_var"):
-                self.status_var.set("全场 2D DIC：请在参考帧拖出分析 ROI，再开始分析。")
+                self.status_var.set("全场 2D DIC：请在参考帧拖出全场 ROI，再开始分析。")
+            if hasattr(self, "export_hint_label"):
+                self.export_hint_label.configure(
+                    text="确认参考帧、全场 ROI 和 DIC 参数后开始；全场核心输出固定生成。"
+                )
             if hasattr(self, "workflow_step_texts"):
                 self.workflow_step_texts = [
                     "1. 选择图像文件夹和输出文件夹，加载序列",
@@ -3316,6 +3750,10 @@ class MultiROIGUI:
                     "4. 开始分析，查看 u/v/应变图",
                 ]
         else:
+            if hasattr(self, "export_hint_label"):
+                self.export_hint_label.configure(
+                    text="确认参考帧、ROI 方向和导出内容后再开始。"
+                )
             if hasattr(self, "workflow_step_texts"):
                 self.workflow_step_texts = [
                     "1. 选择图像文件夹和输出文件夹，加载序列",
@@ -3323,8 +3761,11 @@ class MultiROIGUI:
                     "3. 画 ROI1/ROI2，添加 ROI 组",
                     "4. 确认导出内容，点击开始分析",
                 ]
+        if hasattr(self, "workflow_steps_label"):
+            self.workflow_steps_label.configure(text=self._visible_workflow_steps_text())
         if hasattr(self, "controls_canvas"):
             try:
+                self.controls_panel.update_idletasks()
                 self.controls_canvas.configure(scrollregion=self.controls_canvas.bbox("all"))
             except Exception:
                 pass
@@ -3457,6 +3898,7 @@ class MultiROIGUI:
 
     def _build_roi_section(self, parent):
         group_frame = ttk.LabelFrame(parent, text="3. ROI 设置", padding=(8, 4))
+        self.roi_group_frame = group_frame
         group_frame.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         group_frame.columnconfigure(0, weight=1)
 
@@ -3700,6 +4142,7 @@ class MultiROIGUI:
         )
 
         export_frame = ttk.LabelFrame(self.analysis_frame, text="导出内容", padding=(10, 8))
+        self.export_frame = export_frame
         export_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         export_frame.columnconfigure(0, weight=1)
         export_frame.columnconfigure(1, weight=1)
@@ -3808,8 +4251,44 @@ class MultiROIGUI:
             self.add_tooltip(checkbutton, tooltip)
             self.export_checkbuttons.append(checkbutton)
 
+        self.fullfield_export_info_frame = ttk.LabelFrame(
+            self.analysis_frame, text="全场固定输出", padding=(10, 8)
+        )
+        self.fullfield_export_info_frame.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        self.fullfield_export_info_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            self.fullfield_export_info_frame,
+            text=(
+                "每个有效变形帧固定输出 TXT/CSV（x、y、u、v、ZNCC、Exx、Eyy、Exy）以及 "
+                "u/v/Exx/Eyy/Exy PNG；可选输出 Exx overlay。无需勾选 1D 导出项。"
+            ),
+            style="Hint.TLabel",
+            justify=tk.LEFT,
+            wraplength=430,
+        ).grid(row=0, column=0, sticky="ew")
+        self.fullfield_export_overlays_checkbutton = tk.Checkbutton(
+            self.fullfield_export_info_frame,
+            text="额外导出 Exx overlay（可选）",
+            variable=self.export_overlays,
+            anchor="w",
+            font=self.ui_base_font,
+            bg=self.card_bg,
+            fg=self.text_color,
+            activebackground=self.card_bg,
+            activeforeground=self.text_color,
+            selectcolor=self.card_bg,
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self.fullfield_export_overlays_checkbutton.grid(row=1, column=0, sticky="w", pady=(5, 0))
+        self.add_tooltip(
+            self.fullfield_export_overlays_checkbutton,
+            "可选输出 Exx 场叠加在实际分析帧上的 overlay 图片，用于视觉 QC；不影响固定 TXT/CSV/PNG 核心输出。",
+        )
+
         status_frame = ttk.LabelFrame(self.analysis_frame, text="运行状态", padding=(8, 4))
-        status_frame.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        status_frame.grid(row=4, column=0, sticky="ew", pady=(0, 6))
         status_frame.columnconfigure(0, weight=1)
         self.progress = ttk.Progressbar(status_frame, orient=tk.HORIZONTAL, mode="determinate")
         self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 3))
@@ -3865,12 +4344,12 @@ class MultiROIGUI:
             "分析完成后显示总体 QC 等级、拒绝帧比例、自适应接受帧数、最需复核的 ROI 组和建议复核帧；Poor 不应直接作为可靠科研结论使用。",
         )
 
-        self.analysis_frame.rowconfigure(3, weight=0)
         self.analysis_frame.rowconfigure(4, weight=0)
+        self.analysis_frame.rowconfigure(5, weight=0)
 
         # === Tier 0: In-app results viewer (collapsible) ===
         self.viewer_frame = ttk.LabelFrame(self.analysis_frame, text="结果曲线预览（分析完成后显示，可交互）", padding=(8, 6))
-        self.viewer_frame.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        self.viewer_frame.grid(row=5, column=0, sticky="ew", pady=(6, 0))
         self.viewer_frame.columnconfigure(0, weight=1)
 
         self.viewer_placeholder = ttk.Label(
@@ -3921,7 +4400,7 @@ class MultiROIGUI:
 
         # Move notice down one row
         notice_frame = ttk.Frame(self.analysis_frame, style="Card.TFrame")
-        notice_frame.grid(row=5, column=0, sticky="ew", pady=(4, 0))
+        notice_frame.grid(row=6, column=0, sticky="ew", pady=(4, 0))
         notice_frame.columnconfigure(0, weight=1)
         ttk.Label(
             notice_frame,
@@ -4056,7 +4535,15 @@ class MultiROIGUI:
         self.roi1 = None
         self.roi2 = None
         self.field_roi = None
+        self.roi1_reference_frame_1based = None
+        self.roi2_reference_frame_1based = None
+        self.field_roi_reference_frame_1based = None
         self.dic_last_field = None
+        self.dic_last_image = None
+        self.dic_last_frame_1based = None
+        self.dic_last_filename = None
+        self.dic_last_reference_frame_1based = None
+        self.dic_last_reference_filename = None
         self.current_roi_index = 1
         self.drag_start = None
         self.temp_rect_id = None
@@ -4065,6 +4552,13 @@ class MultiROIGUI:
         self.group_name_var.set("")
         self.refresh_group_tree()
         self.refresh_current_roi_summary()
+        self.last_qc_summary = None
+        if hasattr(self, "qc_overview_var"):
+            self.qc_overview_var.set("分析完成后显示 QC 总览。")
+        if hasattr(self, "clear_viewer"):
+            self.clear_viewer(keep_placeholder=False)
+            if hasattr(self, "viewer_frame"):
+                self.viewer_frame.grid_remove()
 
     def select_image_folder(self):
         folder = filedialog.askdirectory(title="选择 TIF 图片文件夹")
@@ -4086,6 +4580,9 @@ class MultiROIGUI:
         加载图像序列，并显示当前 preview_frame_1based 指定的帧。
         保留函数名是为了兼容前面按钮调用。
         """
+        if self.is_processing or self._completion_pending:
+            messagebox.showinfo("正在处理", "当前分析仍在处理或收尾，请完成后再刷新图像序列。")
+            return
         folder = self.image_folder.get().strip()
         if not folder:
             messagebox.showwarning("缺少文件夹", "请先选择图像文件夹。")
@@ -4096,37 +4593,66 @@ class MultiROIGUI:
             messagebox.showerror("未找到图像", "该文件夹中没有找到 tif/tiff/png/jpg/bmp 图像。")
             return
 
+        preview, preview_err = self._safe_int_var(self.preview_frame_1based)
+        start, start_err = self._safe_int_var(self.start_frame_1based)
+        end, end_err = self._safe_int_var(self.end_frame_1based)
+        if preview_err or start_err or end_err:
+            bad = []
+            if preview_err:
+                bad.append("预览帧")
+            if start_err:
+                bad.append("起始帧")
+            if end_err:
+                bad.append("结束帧")
+            message = f"{'、'.join(bad)}必须是整数，未加载新序列。"
+            messagebox.showerror("加载失败", message)
+            self.log(f"加载图像序列失败：{message}")
+            return
+
         old_state = {
-            "image_paths": self.image_paths,
+            "image_paths": list(self.image_paths),
             "loaded_image_folder": self.loaded_image_folder,
+            "loaded_image_sequence_fingerprint": self.loaded_image_sequence_fingerprint,
             "first_raw": self.first_raw,
             "first_img8": self.first_img8,
+            "current_fullres_img8": self.current_fullres_img8,
             "display_img": self.display_img,
             "display_scale": self.display_scale,
             "photo": self.photo,
-            "preview": self.preview_frame_1based.get(),
-            "start": self.start_frame_1based.get(),
-            "end": self.end_frame_1based.get(),
+            "preview": preview,
+            "start": start,
+            "end": end,
             "current_preview_index": self.current_preview_index,
         }
 
         n = len(new_image_paths)
         folder_key = os.path.normcase(os.path.abspath(folder))
+        new_fingerprint = image_sequence_fingerprint(new_image_paths)
+        sequence_changed = (
+            self.loaded_image_folder is not None
+            and (
+                self.loaded_image_folder != folder_key
+                or self.loaded_image_sequence_fingerprint != new_fingerprint
+            )
+        )
 
         # 如果用户还没设置范围，默认 1 到最后一帧。
-        if self.end_frame_1based.get() <= 1:
+        if end <= 1:
             self.end_frame_1based.set(n)
 
         self.image_paths = new_image_paths
-        self.preview_frame_1based.set(max(1, min(self.preview_frame_1based.get(), n)))
-        self.start_frame_1based.set(max(1, min(self.start_frame_1based.get(), n)))
-        self.end_frame_1based.set(max(1, min(self.end_frame_1based.get(), n)))
+        # Preview is display-only and may be brought into range for a valid
+        # first render.  Start/end remain untouched so out-of-range input is
+        # surfaced by preflight instead of silently clamped.
+        preview = max(1, min(preview, n))
+        self.preview_frame_1based.set(preview)
 
         try:
-            self.load_preview_frame(self.preview_frame_1based.get() - 1)
-            if self.loaded_image_folder != folder_key:
+            self.load_preview_frame(preview - 1)
+            if sequence_changed:
                 self.clear_sequence_dependent_state()
-                self.loaded_image_folder = folder_key
+            self.loaded_image_folder = folder_key
+            self.loaded_image_sequence_fingerprint = new_fingerprint
             self.show_image()
             self.log(f"找到 {n} 张图像。")
             self.log(f"当前预览：第 {self.current_preview_index + 1} 帧 / 共 {n} 帧")
@@ -4135,8 +4661,10 @@ class MultiROIGUI:
         except Exception as exc:
             self.image_paths = old_state["image_paths"]
             self.loaded_image_folder = old_state["loaded_image_folder"]
+            self.loaded_image_sequence_fingerprint = old_state["loaded_image_sequence_fingerprint"]
             self.first_raw = old_state["first_raw"]
             self.first_img8 = old_state["first_img8"]
+            self.current_fullres_img8 = old_state["current_fullres_img8"]
             self.display_img = old_state["display_img"]
             self.display_scale = old_state["display_scale"]
             self.photo = old_state["photo"]
@@ -4183,9 +4711,11 @@ class MultiROIGUI:
             self.root.after_idle(self._rescale_display_to_current_size)
         except Exception:
             pass
+        start, _ = self._safe_int_var(self.start_frame_1based)
+        end, _ = self._safe_int_var(self.end_frame_1based)
+        range_text = f"{start}–{end}" if start is not None and end is not None else "输入待校验"
         self.status_var.set(
-            f"预览第 {index0 + 1}/{n} 帧：{os.path.basename(path)} | "
-            f"分析范围 {self.start_frame_1based.get()}–{self.end_frame_1based.get()}"
+            f"预览第 {index0 + 1}/{n} 帧：{os.path.basename(path)} | 分析范围 {range_text}"
         )
         self._update_preview_scale_label()
         self.log(f"已显示第 {index0 + 1} 帧：{path}")
@@ -4215,22 +4745,27 @@ class MultiROIGUI:
             self.log_user_error("预览帧", exc)
 
     def clear_groups_if_start_changes(self, new_start_1based):
-        old_start = self.start_frame_1based.get()
-        if new_start_1based == old_start:
+        old_start, old_start_err = self._safe_int_var(self.start_frame_1based)
+        if old_start_err is None and new_start_1based == old_start:
             return True
 
-        if self.roi_groups:
+        has_reference_state = bool(
+            self.roi_groups
+            or self.roi1 is not None
+            or self.roi2 is not None
+            or self.field_roi is not None
+        )
+        if has_reference_state:
             msg = (
-                f"你已经添加了 {len(self.roi_groups)} 组 ROI。\\n\\n"
-                f"这些 ROI 应该是在当前起始/参考帧第 {old_start} 帧上定义的。\\n"
+                f"当前已有 {len(self.roi_groups)} 组 ROI 或正在编辑的 ROI。\\n\\n"
+                f"这些 ROI 应该是在当前起始/参考帧第 {old_start if old_start is not None else '未知'} 帧上定义的。\\n"
                 f"如果把起始/参考帧改为第 {new_start_1based} 帧，已有 ROI 模板可能不再对应。\\n\\n"
-                f"建议清空已有 ROI 组并在新起始帧上重画。是否清空并修改起始帧？"
+                f"建议清空已有 ROI、结果和 QC，并在新参考帧上重画。是否清空并修改起始帧？"
             )
             if not messagebox.askyesno("修改起始/参考帧", msg):
                 return False
-            self.roi_groups.clear()
-            self.refresh_group_tree()
-            self.log("由于修改起始/参考帧，已清空已有 ROI 组。")
+            self.clear_sequence_dependent_state()
+            self.log("由于修改起始/参考帧，已清空不兼容的 ROI、结果和 QC。")
         return True
 
     def set_start_to_current(self):
@@ -4243,10 +4778,12 @@ class MultiROIGUI:
             return
 
         self.start_frame_1based.set(new_start)
-        if self.end_frame_1based.get() < new_start:
+        end, end_err = self._safe_int_var(self.end_frame_1based)
+        if end_err is not None or end < new_start:
             self.end_frame_1based.set(len(self.image_paths))
         self.log(f"已将第 {new_start} 帧设为分析起始/参考帧。请在这张图上画 ROI。")
-        self.status_var.set(f"起始/参考帧 = {new_start}；结束帧 = {self.end_frame_1based.get()}")
+        end, _ = self._safe_int_var(self.end_frame_1based)
+        self.status_var.set(f"起始/参考帧 = {new_start}；结束帧 = {end if end is not None else '待校验'}")
 
     def set_end_to_current(self):
         if not self.image_paths:
@@ -4256,7 +4793,8 @@ class MultiROIGUI:
         end = self.current_preview_index + 1
         self.end_frame_1based.set(end)
         self.log(f"已将第 {end} 帧设为分析结束帧。")
-        self.status_var.set(f"起始/参考帧 = {self.start_frame_1based.get()}；结束帧 = {end}")
+        start, _ = self._safe_int_var(self.start_frame_1based)
+        self.status_var.set(f"起始/参考帧 = {start if start is not None else '待校验'}；结束帧 = {end}")
 
     def get_analysis_indices(self):
         if not self.image_paths:
@@ -4266,8 +4804,8 @@ class MultiROIGUI:
         s = self.get_int_setting(self.start_frame_1based, "起始帧") - 1
         e = self.get_int_setting(self.end_frame_1based, "结束帧") - 1
 
-        s = max(0, min(s, n - 1))
-        e = max(0, min(e, n - 1))
+        if s < 0 or s >= n or e < 0 or e >= n:
+            raise RuntimeError(f"分析范围必须位于 1 到 {n} 帧之间：start={s + 1}, end={e + 1}")
 
         if e < s:
             raise RuntimeError(
@@ -4477,16 +5015,17 @@ class MultiROIGUI:
         """根据当前工作流进度控制关键操作按钮，避免用户在不可运行状态下误点。"""
         has_sequence = bool(self.image_paths) and self.first_img8 is not None
         has_groups = bool(self.roi_groups)
-        has_field_roi = (self.field_roi or self.roi1) is not None
-        has_current_roi = self.roi1 is not None or self.roi2 is not None
+        has_field_roi = self.field_roi is not None
+        has_current_roi = self.field_roi is not None if self.is_fullfield_mode() else (self.roi1 is not None or self.roi2 is not None)
         is_processing = getattr(self, "is_processing", False)
+        completion_pending = getattr(self, "_completion_pending", False)
         is_ff = self.is_fullfield_mode()
         preflight_items = self.refresh_preflight_panel() if hasattr(self, "preflight_summary_var") else []
         blocking_items = [item for item in preflight_items if item["level"] == "block"]
         warning_items = [item for item in preflight_items if item["level"] == "warn"]
         self.refresh_current_roi_summary()
         if hasattr(self, "dic_field_summary_var"):
-            roi = self.field_roi or self.roi1
+            roi = self.field_roi
             if roi is None:
                 self.dic_field_summary_var.set("尚未绘制全场 ROI。")
             else:
@@ -4495,7 +5034,7 @@ class MultiROIGUI:
 
         if hasattr(self, "start_button"):
             ready = has_field_roi if is_ff else has_groups
-            can_start = has_sequence and ready and not blocking_items and not is_processing
+            can_start = has_sequence and ready and not blocking_items and not is_processing and not completion_pending
             self.start_button.config(state=tk.NORMAL if can_start else tk.DISABLED)
 
         if hasattr(self, "clear_rois_button"):
@@ -4600,22 +5139,32 @@ class MultiROIGUI:
             self.log("正在处理，已忽略清除当前 ROI 请求。")
             return
 
-        if self.roi1 is None and self.roi2 is None:
+        has_current_roi = self.field_roi is not None if self.is_fullfield_mode() else (self.roi1 is not None or self.roi2 is not None)
+        if not has_current_roi:
             self.status_var.set("当前没有正在编辑的 ROI。")
             self.log("当前没有正在编辑的 ROI，无需清除。")
             return
 
         if not messagebox.askyesno(
             "清除当前 ROI",
-            "确定清除当前正在编辑的 ROI1/ROI2 吗？\n\n"
-            "已添加到 ROI 组列表中的结果不会被删除；如需删除已保存的组，请使用“删除选中组”。",
+            (
+                "确定清除当前正在编辑的全场 ROI 吗？\n\n"
+                if self.is_fullfield_mode()
+                else "确定清除当前正在编辑的 ROI1/ROI2 吗？\n\n"
+            )
+            + "已添加到 ROI 组列表中的结果不会被删除；如需删除已保存的组，请使用“删除选中组”。",
         ):
             self.log("已取消清除当前 ROI。")
             return
 
-        self.roi1 = None
-        self.roi2 = None
-        self.field_roi = None
+        if self.is_fullfield_mode():
+            self.field_roi = None
+            self.field_roi_reference_frame_1based = None
+        else:
+            self.roi1 = None
+            self.roi2 = None
+            self.roi1_reference_frame_1based = None
+            self.roi2_reference_frame_1based = None
         self.show_image()
         self.log("已清除当前 ROI。")
         self.update_workflow_action_states()
@@ -4664,10 +5213,11 @@ class MultiROIGUI:
             return
 
         rect = clamp_rect((rx, ry, rw, rh), self.first_img8.shape)
+        reference_frame_1based = self.current_preview_index + 1
 
         if self.is_fullfield_mode():
-            self.roi1 = rect
             self.field_roi = rect
+            self.field_roi_reference_frame_1based = reference_frame_1based
             self.log(f"全场 ROI = {rect}")
             self.log_roi_texture("全场 ROI", rect)
             self.status_var.set("全场 ROI 已设置。可开始 2D DIC 分析。")
@@ -4677,12 +5227,14 @@ class MultiROIGUI:
 
         if self.current_roi_index == 1:
             self.roi1 = rect
+            self.roi1_reference_frame_1based = reference_frame_1based
             self.log(f"当前 ROI 1 = {rect}")
             self.log_roi_texture("当前 ROI 1", rect)
             self.current_roi_index = 2
             self.status_var.set("ROI 1 已设置。现在请绘制 ROI 2。")
         else:
             self.roi2 = rect
+            self.roi2_reference_frame_1based = reference_frame_1based
             if self.auto_align_roi2.get() and self.roi1 is not None:
                 axis = self.auto_choose_alignment_axis()
                 self.align_current_pair(axis, set_mode=False)
@@ -4701,7 +5253,7 @@ class MultiROIGUI:
 
         s = self.display_scale
 
-        field_roi = self.field_roi or (self.roi1 if self.is_fullfield_mode() else None)
+        field_roi = self.field_roi if self.is_fullfield_mode() else None
         if field_roi is not None and self.is_fullfield_mode():
             x, y, w, h = field_roi
             self.canvas.create_rectangle(
@@ -4716,21 +5268,22 @@ class MultiROIGUI:
                 font=self.canvas_current_roi_font,
             )
 
-        # 已添加组：绿色线和小标签
-        for idx, group in enumerate(self.roi_groups, start=1):
-            r1 = group["roi1"]
-            r2 = group["roi2"]
-            c1 = rect_center(r1)
-            c2 = rect_center(r2)
-            self.canvas.create_line(c1[0]*s, c1[1]*s, c2[0]*s, c2[1]*s, fill="lime", width=2)
-            self.canvas.create_text(
-                c1[0]*s + 4,
-                c1[1]*s + 4,
-                text=group["name"],
-                anchor="nw",
-                fill="lime",
-                font=self.canvas_group_font,
-            )
+        # 1-D groups are intentionally invisible in full-field mode.
+        if not self.is_fullfield_mode():
+            for idx, group in enumerate(self.roi_groups, start=1):
+                r1 = group["roi1"]
+                r2 = group["roi2"]
+                c1 = rect_center(r1)
+                c2 = rect_center(r2)
+                self.canvas.create_line(c1[0]*s, c1[1]*s, c2[0]*s, c2[1]*s, fill="lime", width=2)
+                self.canvas.create_text(
+                    c1[0]*s + 4,
+                    c1[1]*s + 4,
+                    text=group["name"],
+                    anchor="nw",
+                    fill="lime",
+                    font=self.canvas_group_font,
+                )
 
         def draw(rect, color, label):
             if rect is None:
@@ -4752,8 +5305,9 @@ class MultiROIGUI:
                 font=self.canvas_current_roi_font,
             )
 
-        draw(self.roi1, "red", "current ROI 1")
-        draw(self.roi2, "cyan", "current ROI 2")
+        if not self.is_fullfield_mode():
+            draw(self.roi1, "red", "current ROI 1")
+            draw(self.roi2, "cyan", "current ROI 2")
 
     # ---------- 对齐与组管理 ----------
 
@@ -4811,7 +5365,7 @@ class MultiROIGUI:
             raise RuntimeError("请先画 ROI 1 和 ROI 2。")
 
         # 安全限制：ROI 必须在分析起始/参考帧上定义。
-        start_1based = int(self.start_frame_1based.get())
+        start_1based = self.get_int_setting(self.start_frame_1based, "起始帧")
         current_1based = int(self.current_preview_index + 1)
         if current_1based != start_1based:
             msg = (
@@ -4821,6 +5375,14 @@ class MultiROIGUI:
                 f"或者点击“设为起始/参考”。"
             )
             raise RuntimeError(msg)
+        for label, reference_frame in (
+            ("ROI1", self.roi1_reference_frame_1based),
+            ("ROI2", self.roi2_reference_frame_1based),
+        ):
+            if reference_frame is not None and int(reference_frame) != start_1based:
+                raise RuntimeError(
+                    f"{label} 在第 {reference_frame} 帧定义，但当前起始/参考帧为第 {start_1based} 帧，请重画。"
+                )
 
         selected = self.strain_mode.get()
         actual = resolve_strain_mode(self.roi1, self.roi2, selected)
@@ -4845,6 +5407,8 @@ class MultiROIGUI:
             "dist0": dist,
             "L0": L0,
             "reference_frame_1based": current_1based,
+            "roi1_reference_frame_1based": self.roi1_reference_frame_1based or current_1based,
+            "roi2_reference_frame_1based": self.roi2_reference_frame_1based or current_1based,
         }
 
         return group
@@ -4954,6 +5518,12 @@ class MultiROIGUI:
         group = self.roi_groups[idx]
         self.roi1 = tuple(group["roi1"])
         self.roi2 = tuple(group["roi2"])
+        self.roi1_reference_frame_1based = group.get(
+            "roi1_reference_frame_1based", group.get("reference_frame_1based")
+        )
+        self.roi2_reference_frame_1based = group.get(
+            "roi2_reference_frame_1based", group.get("reference_frame_1based")
+        )
         self.strain_mode.set(group["selected_mode"])
         self.sync_strain_mode_display()
         self.roi_role.set(normalize_roi_role(group.get("role", "none")))
@@ -5005,19 +5575,26 @@ class MultiROIGUI:
     def refresh_group_tree(self):
         self.group_tree.delete(*self.group_tree.get_children())
         for idx, g in enumerate(self.roi_groups):
+            selected_label = STRAIN_MODE_VALUE_TO_LABEL.get(g.get("selected_mode"), g.get("selected_mode", ""))
+            actual_label = STRAIN_MODE_VALUE_TO_LABEL.get(g.get("actual_mode"), g.get("actual_mode", ""))
             values = (
                 g["name"],
                 ROI_ROLE_VALUE_TO_LABEL.get(normalize_roi_role(g.get("role", "none")), "普通"),
-                g["selected_mode"],
-                g["actual_mode"],
-                f"{g['L0']:.1f}",
-                f"{g['dx0']:.1f}",
-                f"{g['dy0']:.1f}",
-                str(g["roi1"]),
-                str(g["roi2"]),
+                selected_label,
+                actual_label,
+                f"{g['L0']:.1f} px",
+                f"{g['dx0']:.1f} px",
+                f"{g['dy0']:.1f} px",
+                self._format_roi_for_tree(g["roi1"]),
+                self._format_roi_for_tree(g["roi2"]),
             )
             self.group_tree.insert("", "end", iid=str(idx), values=values)
         self.update_workflow_action_states()
+
+    @staticmethod
+    def _format_roi_for_tree(rect):
+        x, y, w, h = (int(round(value)) for value in rect)
+        return f"({x}, {y}, {w}, {h}) px"
 
     def log_group_info(self, prefix, group):
         self.log(
@@ -5151,18 +5728,28 @@ class MultiROIGUI:
                 raise RuntimeError("用户取消：某些 ROI 组 L0 太小。")
 
     def validate_fullfield_before_processing(self):
-        if (self.field_roi or self.roi1) is None:
+        if self.field_roi is None:
             raise RuntimeError("请先绘制全场分析 ROI。")
         if not self.output_folder.get().strip():
             raise RuntimeError("请设置输出文件夹。")
         output_path = Path(self.output_folder.get().strip())
         if output_path.exists() and not output_path.is_dir():
             raise RuntimeError(f"输出路径已存在但不是文件夹：{output_path}")
-        if not self.has_any_export_option():
-            raise RuntimeError("请至少选择一种导出内容。")
         start_idx, end_idx = self.get_analysis_indices()
         if end_idx <= start_idx:
             raise RuntimeError("分析范围至少应包含两帧（参考帧 + 变形帧）。")
+        field_ref = self.field_roi_reference_frame_1based
+        if field_ref is None:
+            raise RuntimeError("全场 ROI 缺少绘制参考帧记录，请在当前起始/参考帧重画。")
+        if int(field_ref) != start_idx + 1:
+            raise RuntimeError(
+                f"全场 ROI 在第 {field_ref} 帧定义，但当前起始/参考帧为第 {start_idx + 1} 帧，请重画全场 ROI。"
+            )
+        if self.first_img8 is None:
+            raise RuntimeError("请先加载参考图像。")
+        if not rect_is_inside_image(self.field_roi, self.first_img8.shape):
+            raise RuntimeError("全场 ROI 必须完整位于参考图像内。")
+        validate_image_sequence_dimensions(self.image_paths[start_idx : end_idx + 1])
         subset = self.get_int_setting(self.dic_subset_size, "子集尺寸")
         step = self.get_int_setting(self.dic_step, "步长")
         window = self.get_int_setting(self.dic_strain_window, "应变窗口")
@@ -5171,10 +5758,14 @@ class MultiROIGUI:
         smooth_sigma = self.get_float_setting(self.dic_smooth_sigma, "高斯平滑 σ")
         if subset < 9:
             raise RuntimeError("子集尺寸必须 >= 9。")
+        if subset % 2 == 0:
+            raise RuntimeError("子集尺寸必须为奇数；请使用 21、23 等值。")
         if step < 1:
             raise RuntimeError("步长必须 >= 1。")
         if window < 3:
             raise RuntimeError("应变窗口必须 >= 3。")
+        if window % 2 == 0:
+            raise RuntimeError("应变窗口必须为奇数；请使用 5、7 等值。")
         if search_radius < 1:
             raise RuntimeError("DIC 搜索半径必须 > 0。")
         if not (0.0 <= zncc_min <= 1.0):
@@ -5183,61 +5774,126 @@ class MultiROIGUI:
             raise RuntimeError("高斯平滑 σ 不能为负。")
         if str(self.dic_solver.get()) not in DIC_SOLVERS:
             raise RuntimeError("求解器必须是 IC-GN 或 IC-LM。")
-        roi = self.field_roi or self.roi1
+        roi = self.field_roi
         X, Y = build_poi_grid(roi, subset, step, self.first_img8.shape)
-        if X.size == 0:
-            raise RuntimeError("当前 ROI / 子集 / 步长组合没有可分析的 POI，请增大 ROI 或减小子集。")
+        if not poi_grid_is_usable(X, Y, min_rows=3, min_cols=3):
+            raise RuntimeError("当前 ROI / 子集 / 步长至少需要 3×3 个可分析的 2D POI，请增大 ROI 或减小步长。")
 
     def build_processing_settings(self):
         start_idx, end_idx = self.get_analysis_indices()
-        max_frame_jump = None
-        if self.max_frame_strain_jump.get().strip():
-            max_frame_jump = float(self.max_frame_strain_jump.get().strip())
+        is_ff = self.is_fullfield_mode()
+        if is_ff:
+            # Hidden 1-D controls are deliberately not read in full-field
+            # mode.  Their stale/invalid values must not poison a valid 2-D
+            # settings snapshot.
+            search_radius_base = 180
+            hard_corr = 0.55
+            soft_corr = 0.35
+            enable_adaptive = True
+            use_prev_frame_template = True
+            template_alpha = 0.70
+            max_frame_jump = None
+            enable_fb_check = True
+            fb_tolerance = 12.0
+            pixel_size_mm = None
+            overlay_every = 5
+        else:
+            max_frame_jump = None
+            if self.max_frame_strain_jump.get().strip():
+                max_frame_jump = float(self.max_frame_strain_jump.get().strip())
 
-        pixel_size_mm = None
-        if self.pixel_size_mm.get().strip():
-            pixel_size_mm = float(self.pixel_size_mm.get().strip())
+            pixel_size_mm = None
+            if self.pixel_size_mm.get().strip():
+                pixel_size_mm = float(self.pixel_size_mm.get().strip())
+            search_radius_base = self.get_int_setting(self.search_radius, "搜索半径")
+            hard_corr = self.get_float_setting(self.hard_corr, "硬相关阈值")
+            soft_corr = self.get_float_setting(self.soft_corr, "软相关下限")
+            enable_adaptive = bool(self.enable_adaptive.get())
+            use_prev_frame_template = bool(self.use_prev_frame_template.get())
+            template_alpha = self.get_float_setting(self.template_alpha, "模板跟随系数")
+            enable_fb_check = bool(self.enable_fb_check.get())
+            fb_tolerance = self.get_float_setting(self.fb_tolerance_px, "FB 容差")
+            overlay_every = self.get_int_setting(self.overlay_every, "overlay 保存间隔")
 
+        if is_ff:
+            export_origin_txt = False
+            export_origin_opju = False
+            export_engineering_png = False
+            export_publication_figures = False
+            export_qc_summary = False
+            export_full_csv = False
+            export_corr_plot = False
+            export_parameters = False
+            export_overlays = bool(self.export_overlays.get())
+            tracking_preset = "fullfield"
+        else:
+            export_origin_txt = bool(self.export_origin_txt.get())
+            export_origin_opju = bool(self.export_origin_opju.get())
+            export_engineering_png = bool(self.export_engineering_png.get())
+            export_publication_figures = bool(self.export_publication_figures.get())
+            export_qc_summary = bool(self.export_qc_summary.get())
+            export_full_csv = bool(self.export_full_csv.get())
+            export_corr_plot = bool(self.export_corr_plot.get())
+            export_overlays = bool(self.export_overlays.get())
+            export_parameters = bool(self.export_parameters.get())
+            tracking_preset = self.tracking_preset.get()
+
+        field_roi = tuple(self.field_roi) if self.field_roi is not None else None
         return {
             "output_dir": Path(self.output_folder.get().strip()),
             "image_paths": list(self.image_paths),
             "roi_groups": [dict(group) for group in self.roi_groups],
             "start_idx": start_idx,
             "end_idx": end_idx,
-            "search_radius_base": self.get_int_setting(self.search_radius, "搜索半径"),
-            "hard_corr": self.get_float_setting(self.hard_corr, "硬相关阈值"),
-            "soft_corr": self.get_float_setting(self.soft_corr, "软相关下限"),
-            "enable_adaptive": bool(self.enable_adaptive.get()),
-            "use_prev_frame_template": bool(self.use_prev_frame_template.get()),
-            "template_alpha": self.get_float_setting(self.template_alpha, "模板跟随系数"),
+            "search_radius_base": search_radius_base,
+            "hard_corr": hard_corr,
+            "soft_corr": soft_corr,
+            "enable_adaptive": enable_adaptive,
+            "use_prev_frame_template": use_prev_frame_template,
+            "template_alpha": template_alpha,
             "max_frame_jump": max_frame_jump,
-            "enable_fb_check": bool(self.enable_fb_check.get()),
-            "fb_tolerance": self.get_float_setting(self.fb_tolerance_px, "FB 容差"),
+            "enable_fb_check": enable_fb_check,
+            "fb_tolerance": fb_tolerance,
             "pixel_size_mm": pixel_size_mm,
-            "overlay_every": self.get_int_setting(self.overlay_every, "overlay 保存间隔"),
-            "export_origin_txt": bool(self.export_origin_txt.get()),
-            "export_origin_opju": bool(self.export_origin_opju.get()),
-            "export_engineering_png": bool(self.export_engineering_png.get()),
-            "export_publication_figures": bool(self.export_publication_figures.get()),
-            "export_qc_summary": bool(self.export_qc_summary.get()),
-            "export_full_csv": bool(self.export_full_csv.get()),
-            "export_corr_plot": bool(self.export_corr_plot.get()),
-            "export_overlays": bool(self.export_overlays.get()),
-            "export_parameters": bool(self.export_parameters.get()),
+            "overlay_every": overlay_every,
+            "export_origin_txt": export_origin_txt,
+            "export_origin_opju": export_origin_opju,
+            "export_engineering_png": export_engineering_png,
+            "export_publication_figures": export_publication_figures,
+            "export_qc_summary": export_qc_summary,
+            "export_full_csv": export_full_csv,
+            "export_corr_plot": export_corr_plot,
+            "export_overlays": export_overlays,
+            "export_parameters": export_parameters,
             "image_folder": self.image_folder.get(),
-            "tracking_preset": self.tracking_preset.get(),
+            "tracking_preset": tracking_preset,
             "analysis_mode": str(self.analysis_mode.get()),
-            "field_roi": tuple(self.field_roi or self.roi1) if (self.field_roi or self.roi1) else None,
-            "dic_subset_size": int(self.dic_subset_size.get()) if self.is_fullfield_mode() else 21,
-            "dic_step": int(self.dic_step.get()) if self.is_fullfield_mode() else 5,
+            "field_roi": field_roi,
+            "field_roi_reference_frame_1based": self.field_roi_reference_frame_1based,
+            "reference_frame_1based": start_idx + 1,
+            "reference_filename": Path(self.image_paths[start_idx]).name,
+            "image_sequence_fingerprint": image_sequence_fingerprint(self.image_paths),
+            "dic_subset_size": int(self.dic_subset_size.get()) if is_ff else 21,
+            "dic_step": int(self.dic_step.get()) if is_ff else 5,
             "dic_solver": str(self.dic_solver.get()),
-            "dic_strain_window": int(self.dic_strain_window.get()) if self.is_fullfield_mode() else 5,
-            "dic_smooth_sigma": float(self.dic_smooth_sigma.get()) if self.is_fullfield_mode() else 0.0,
-            "dic_search_radius": int(self.dic_search_radius.get()) if self.is_fullfield_mode() else 20,
-            "dic_zncc_min": float(self.dic_zncc_min.get()) if self.is_fullfield_mode() else 0.75,
+            "dic_strain_window": int(self.dic_strain_window.get()) if is_ff else 5,
+            "dic_smooth_sigma": float(self.dic_smooth_sigma.get()) if is_ff else 0.0,
+            "dic_search_radius": int(self.dic_search_radius.get()) if is_ff else 20,
+            "dic_zncc_min": float(self.dic_zncc_min.get()) if is_ff else 0.75,
         }
 
-    def post_to_ui(self, callback):
+    def post_to_ui(self, callback, run_token=None):
+        if run_token is None:
+            run_token = getattr(self._worker_context, "run_token", None)
+        if run_token is not None:
+            original_callback = callback
+
+            def guarded_callback():
+                if self._active_run_token != run_token:
+                    return
+                original_callback()
+
+            callback = guarded_callback
         self.ui_queue.put(callback)
         return True
 
@@ -5261,9 +5917,19 @@ class MultiROIGUI:
 
     # ---------- 批量处理 ----------
 
+    def _finalize_processing_state(self, run_token):
+        """Release the completion gate only after all queued run callbacks drain."""
+        if run_token is not None and self._active_run_token != run_token:
+            return
+        self._completion_pending = False
+        self.update_workflow_action_states()
+
     def start_processing(self):
         if self.is_processing:
             messagebox.showinfo("正在处理", "程序正在处理，请等待当前任务完成。")
+            return
+        if self._completion_pending:
+            messagebox.showinfo("正在收尾", "上一轮分析正在收尾，请等待完成后再开始。")
             return
 
         try:
@@ -5273,6 +5939,11 @@ class MultiROIGUI:
             messagebox.showerror("参数错误", str(exc))
             return
 
+        self._run_generation += 1
+        run_token = self._run_generation
+        settings["_run_token"] = run_token
+        self._active_run_token = run_token
+        self._completion_pending = False
         self.is_processing = True
         self.progress["value"] = 0
         if settings.get("analysis_mode") == ANALYSIS_MODE_FULLFIELD:
@@ -5289,6 +5960,8 @@ class MultiROIGUI:
         thread.start()
 
     def process_fullfield_thread(self, settings):
+        run_token = settings.get("_run_token")
+        self._worker_context.run_token = run_token
         try:
             self.process_fullfield(settings)
         except Exception as exc:
@@ -5297,8 +5970,14 @@ class MultiROIGUI:
             self.post_to_ui(lambda m=message: messagebox.showerror("处理失败", m))
             self.post_to_ui(lambda e=exc, d=details: self.log_user_error("全场 DIC", e, d))
         finally:
+            if run_token is not None:
+                self._completion_pending = True
             self.is_processing = False
-            self.post_to_ui(lambda: self.update_workflow_action_states())
+            if run_token is not None:
+                self.post_to_ui(lambda token=run_token: self._finalize_processing_state(token))
+            else:
+                self.post_to_ui(lambda: self.update_workflow_action_states())
+            self._worker_context.run_token = None
 
     def process_fullfield(self, settings):
         paths = settings["image_paths"]
@@ -5306,60 +5985,173 @@ class MultiROIGUI:
         end_idx = settings["end_idx"]
         roi = settings["field_roi"]
         output_dir = Path(settings["output_dir"]) / "dic"
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if roi is None:
+            raise RuntimeError("全场 DIC 缺少独立的全场 ROI，不能回退到 1D ROI1。")
+        if not paths or start_idx < 0 or end_idx >= len(paths) or end_idx <= start_idx:
+            raise RuntimeError("全场 DIC 的分析范围无效。")
+        field_ref = settings.get("field_roi_reference_frame_1based")
+        if field_ref is None:
+            raise RuntimeError("全场 ROI 缺少绘制参考帧记录，请在当前起始/参考帧重画。")
+        if int(field_ref) != start_idx + 1:
+            raise RuntimeError(
+                f"全场 ROI 在第 {field_ref} 帧定义，但当前起始/参考帧为第 {start_idx + 1} 帧。"
+            )
+        validate_image_sequence_dimensions(paths[start_idx : end_idx + 1])
         ref_raw = read_gray_image(paths[start_idx])
         ref8 = normalize_to_uint8(ref_raw)
+        if not rect_is_inside_image(roi, ref8.shape):
+            raise RuntimeError("全场 ROI 必须完整位于参考图像内。")
+        try:
+            requested_subset_size = int(settings["dic_subset_size"])
+            requested_step = int(settings["dic_step"])
+            requested_strain_window = int(settings["dic_strain_window"])
+            requested_search_radius = int(settings["dic_search_radius"])
+            requested_zncc_min = float(settings["dic_zncc_min"])
+            requested_smooth_sigma = float(settings["dic_smooth_sigma"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("全场 DIC 参数无效，无法开始计算。") from exc
+        if requested_subset_size < 9:
+            raise RuntimeError("子集尺寸必须 >= 9。")
+        if requested_step < 1:
+            raise RuntimeError("步长必须 >= 1。")
+        if requested_strain_window < 3:
+            raise RuntimeError("应变窗口必须 >= 3。")
+        if requested_search_radius < 1:
+            raise RuntimeError("DIC 搜索半径必须 > 0。")
+        if not (0.0 <= requested_zncc_min <= 1.0):
+            raise RuntimeError("ZNCC 下限应在 0 到 1 之间。")
+        if requested_smooth_sigma < 0:
+            raise RuntimeError("高斯平滑 σ 不能为负。")
+        if str(settings.get("dic_solver")) not in DIC_SOLVERS:
+            raise RuntimeError("求解器必须是 IC-GN 或 IC-LM。")
+        effective_subset_size = _odd_subset_size(requested_subset_size)
+        effective_strain_window = _odd_window_size(requested_strain_window)
+        X, Y = build_poi_grid(roi, effective_subset_size, requested_step, ref8.shape)
+        if not poi_grid_is_usable(X, Y, min_rows=3, min_cols=3):
+            raise RuntimeError("当前全场 ROI / 子集 / 步长至少需要 3×3 个可分析的 2D POI。")
+        # All read-only validation is complete.  Preserve old generated files
+        # now, immediately before formal computation starts.
+        archive_previous_fullfield_outputs(output_dir)
+        staging_dir = _create_unique_timestamped_dir(output_dir, prefix=".staging")
         kwargs = {
-            "subset_size": settings["dic_subset_size"],
-            "step": settings["dic_step"],
+            "subset_size": requested_subset_size,
+            "step": requested_step,
             "solver": settings["dic_solver"],
-            "search_radius": settings["dic_search_radius"],
-            "zncc_min": settings["dic_zncc_min"],
-            "strain_window": settings["dic_strain_window"],
-            "smooth_sigma": settings["dic_smooth_sigma"],
+            "search_radius": requested_search_radius,
+            "zncc_min": requested_zncc_min,
+            "strain_window": requested_strain_window,
+            "smooth_sigma": requested_smooth_sigma,
         }
         n_def = end_idx - start_idx
         last_field = None
         last_img8 = ref8
-        for k, frame_i in enumerate(range(start_idx + 1, end_idx + 1), start=1):
-            img_raw = read_gray_image(paths[frame_i])
-            img8 = normalize_to_uint8(img_raw)
-            field = run_2d_dic(ref8, img8, roi, **kwargs)
-            stem = f"frame_{frame_i + 1:04d}"
-            export_dic_field_outputs(field, output_dir, stem=stem)
-            if settings.get("export_overlays"):
-                overlay = overlay_dic_field_on_image(img8, field, component="Exx")
-                ok, encoded = cv2.imencode(".png", cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
-                if ok:
-                    encoded.tofile(str(output_dir / f"{stem}_overlay.png"))
-            last_field = field
-            last_img8 = img8
-            progress_val = 100.0 * k / max(n_def, 1)
-            mean_u = float(np.nanmean(field["u"])) if np.isfinite(field["u"]).any() else float("nan")
-            mean_v = float(np.nanmean(field["v"])) if np.isfinite(field["v"]).any() else float("nan")
-            n_valid = int(np.asarray(field["valid"]).sum())
-            msg = (
-                f"全场 DIC {k}/{n_def}：{Path(paths[frame_i]).name}  "
-                f"有效点={n_valid}  mean u={mean_u:.4f} v={mean_v:.4f}  {settings['dic_solver']}"
-            )
-            self.post_to_ui(lambda v=progress_val: self.progress.config(value=v))
-            self.post_to_ui(lambda m=msg: self.status_var.set(m))
-            self.post_to_ui(lambda m=msg: self.log(m))
+        last_frame_idx = None
+        last_filename = None
+        valid_frame_count = 0
+        reference_provenance = {
+            "analysis_mode": ANALYSIS_MODE_FULLFIELD,
+            "image_folder": settings.get("image_folder", ""),
+            "reference_frame_1based": start_idx + 1,
+            "reference_filename": Path(paths[start_idx]).name,
+            "field_roi": tuple(int(round(value)) for value in roi),
+            "field_roi_reference_frame_1based": settings.get(
+                "field_roi_reference_frame_1based"
+            ) or start_idx + 1,
+            "image_shape_px": tuple(int(value) for value in ref8.shape[:2]),
+            "subset_size_px": effective_subset_size,
+            "step_px": requested_step,
+            "solver": settings["dic_solver"],
+            "zncc_min": requested_zncc_min,
+            "strain_window": effective_strain_window,
+            "smooth_sigma": requested_smooth_sigma,
+            "image_sequence_fingerprint": settings.get("image_sequence_fingerprint"),
+        }
+        try:
+            for k, frame_i in enumerate(range(start_idx + 1, end_idx + 1), start=1):
+                img_raw = read_gray_image(paths[frame_i])
+                if tuple(img_raw.shape[:2]) != tuple(ref8.shape[:2]):
+                    raise RuntimeError(
+                        f"全场 DIC 图像尺寸不一致：参考帧 {ref8.shape[1]}×{ref8.shape[0]} px，"
+                        f"{Path(paths[frame_i]).name} 为 {img_raw.shape[1]}×{img_raw.shape[0]} px。"
+                    )
+                img8 = normalize_to_uint8(img_raw)
+                field = run_2d_dic(ref8, img8, roi, **kwargs)
+                if not fullfield_field_has_finite_strain(field):
+                    msg = f"全场 DIC {k}/{n_def}：{Path(paths[frame_i]).name} 无有效/有限应变，已跳过导出。"
+                    self.post_to_ui(lambda v=100.0 * k / max(n_def, 1): self.progress.config(value=v))
+                    self.post_to_ui(lambda m=msg: self.status_var.set(m))
+                    self.post_to_ui(lambda m=msg: self.log(m))
+                    continue
 
-        if last_field is None:
-            raise RuntimeError("没有可分析的变形帧。")
+                valid_frame_count += 1
+                field["provenance"] = {
+                    **reference_provenance,
+                    "frame_global_1based": frame_i + 1,
+                    "frame_filename": Path(paths[frame_i]).name,
+                }
+                field["reference_frame_1based"] = start_idx + 1
+                field["reference_filename"] = Path(paths[start_idx]).name
+                field["frame_global_1based"] = frame_i + 1
+                field["frame_filename"] = Path(paths[frame_i]).name
+                stem = f"frame_{frame_i + 1:04d}"
+                export_dic_field_outputs(field, staging_dir, stem=stem)
+                if settings.get("export_overlays"):
+                    overlay = overlay_dic_field_on_image(img8, field, component="Exx")
+                    write_image_checked(
+                        staging_dir / f"{stem}_overlay.png",
+                        cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR),
+                    )
+                last_field = field
+                last_img8 = img8
+                last_frame_idx = frame_i
+                last_filename = Path(paths[frame_i]).name
+                progress_val = 100.0 * k / max(n_def, 1)
+                mean_u = float(np.nanmean(field["u"])) if np.isfinite(field["u"]).any() else float("nan")
+                mean_v = float(np.nanmean(field["v"])) if np.isfinite(field["v"]).any() else float("nan")
+                n_valid = int(np.asarray(field["valid"]).sum())
+                msg = (
+                    f"全场 DIC {k}/{n_def}：{Path(paths[frame_i]).name}  "
+                    f"有效点={n_valid}  mean u={mean_u:.4f} v={mean_v:.4f}  {settings['dic_solver']}"
+                )
+                self.post_to_ui(lambda v=progress_val: self.progress.config(value=v))
+                self.post_to_ui(lambda m=msg: self.status_var.set(m))
+                self.post_to_ui(lambda m=msg: self.log(m))
+
+            if last_field is None or valid_frame_count == 0:
+                raise RuntimeError("全场 DIC 所有变形帧均无有效/有限应变，未导出结果。")
+            commit_fullfield_staging(staging_dir, output_dir)
+        except Exception:
+            try:
+                archive_failed_fullfield_staging(staging_dir, output_dir)
+            except Exception as archive_exc:
+                self.post_to_ui(lambda m=f"全场 DIC 失败归档失败：{archive_exc}": self.log(m))
+            raise
 
         def _finish():
             self.dic_last_field = last_field
-            self.show_field_viewer(last_field)
+            self.dic_last_image = last_img8.copy()
+            self.dic_last_frame_1based = last_frame_idx + 1
+            self.dic_last_filename = last_filename
+            self.dic_last_reference_frame_1based = start_idx + 1
+            self.dic_last_reference_filename = Path(paths[start_idx]).name
+            self.show_field_viewer(
+                last_field,
+                image=last_img8,
+                frame_1based=last_frame_idx + 1,
+                filename=last_filename,
+                reference_frame_1based=start_idx + 1,
+                reference_filename=Path(paths[start_idx]).name,
+            )
             self.show_completion_and_open_output_folder(
-                f"全场 2D DIC 完成。结果已写入 {output_dir}",
+                f"全场 2D DIC 完成：{valid_frame_count}/{n_def} 个变形帧有效。结果已写入 {output_dir}",
                 output_dir,
             )
 
         self.post_to_ui(_finish)
 
     def process_images_thread(self, settings):
+        run_token = settings.get("_run_token")
+        self._worker_context.run_token = run_token
         try:
             self.process_images(settings)
         except Exception as exc:
@@ -5368,8 +6160,14 @@ class MultiROIGUI:
             self.post_to_ui(lambda m=message: messagebox.showerror("处理失败", m))
             self.post_to_ui(lambda e=exc, d=details: self.log_user_error("批量处理", e, d))
         finally:
+            if run_token is not None:
+                self._completion_pending = True
             self.is_processing = False
-            self.post_to_ui(lambda: self.update_workflow_action_states())
+            if run_token is not None:
+                self.post_to_ui(lambda token=run_token: self._finalize_processing_state(token))
+            else:
+                self.post_to_ui(lambda: self.update_workflow_action_states())
+            self._worker_context.run_token = None
 
     def init_group_states(self, first_img8, groups=None):
         if groups is None:
@@ -5440,14 +6238,27 @@ class MultiROIGUI:
         fb_score2 = np.nan
 
         if frame_idx == 0:
-            accepted = True
-            accept_mode = "initial"
-            reason = "initial frame"
-            L = L0
-            strain = 0.0
-            true_strain = 0.0
             used_rect1 = last_good_rect1
             used_rect2 = last_good_rect2
+            template_ok1 = has_nonzero_variance(template1)
+            template_ok2 = has_nonzero_variance(template2)
+            if template_ok1 and template_ok2:
+                accepted = True
+                accept_mode = "initial"
+                reason = "initial frame"
+                L = L0
+                strain = 0.0
+                true_strain = 0.0
+            else:
+                accepted = False
+                accept_mode = "rejected"
+                score1 = 1.0 if template_ok1 else -1.0
+                score2 = 1.0 if template_ok2 else -1.0
+                reason = "zero-variance template; frame rejected"
+                L = np.nan
+                strain = np.nan
+                true_strain = np.nan
+                state["consecutive_fail_count"] = consecutive_fail_count + 1
         else:
             radius_factor = min(5, 1 + consecutive_fail_count)
             search_radius = search_radius_base * radius_factor
@@ -5768,7 +6579,7 @@ class MultiROIGUI:
                         fb_err2=overlay_info["fb_err2"] if np.isfinite(overlay_info["fb_err2"]) else None,
                     )
                     out_name = overlay_dirs[group_name] / f"tracked_{i:05d}.png"
-                    cv2.imwrite(str(out_name), overlay)
+                    write_image_checked(out_name, overlay)
 
                 done_work += 1
                 if done_work % max(1, len(states) * 5) == 0 or not accepted or accept_mode == "adaptive" or i == n - 1:
@@ -5992,41 +6803,97 @@ class MultiROIGUI:
     # Tier 0: In-app interactive results viewer
     # ==========================
 
-    def show_field_viewer(self, field, component=None):
-        """Embed a colormap of a DIC field (u/v/strain) with a publication-style colorbar."""
+    def show_field_viewer(
+        self,
+        field,
+        component=None,
+        *,
+        image=None,
+        frame_1based=None,
+        filename=None,
+        reference_frame_1based=None,
+        reference_filename=None,
+    ):
+        """Embed a DIC field and bind it to the image/frame that produced it."""
         if field is None:
             return
+        previous_image = self.dic_last_image
+        previous_frame = self.dic_last_frame_1based
+        previous_filename = self.dic_last_filename
+        previous_reference_frame = self.dic_last_reference_frame_1based
+        previous_reference_filename = self.dic_last_reference_filename
         self.clear_viewer(keep_placeholder=False)
         self.viewer_frame.grid()
         self.dic_last_field = field
+        provenance = dict(field.get("provenance") or {})
+        if image is not None:
+            self.dic_last_image = np.asarray(image).copy()
+        elif previous_image is not None:
+            self.dic_last_image = np.asarray(previous_image).copy()
+        elif self.current_fullres_img8 is not None:
+            # Backwards-compatible direct calls use the current image once;
+            # subsequent component changes stay bound to this snapshot.
+            self.dic_last_image = np.asarray(self.current_fullres_img8).copy()
+        self.dic_last_frame_1based = frame_1based if frame_1based is not None else provenance.get("frame_global_1based", field.get("frame_global_1based", previous_frame))
+        self.dic_last_filename = filename if filename is not None else provenance.get("frame_filename", field.get("frame_filename", previous_filename))
+        self.dic_last_reference_frame_1based = (
+            reference_frame_1based
+            if reference_frame_1based is not None
+            else provenance.get("reference_frame_1based", field.get("reference_frame_1based", previous_reference_frame))
+        )
+        self.dic_last_reference_filename = (
+            reference_filename
+            if reference_filename is not None
+            else provenance.get("reference_filename", field.get("reference_filename", previous_reference_filename))
+        )
         self._viewer_kind = "fullfield"
         if component:
             self.dic_field_component.set(component)
+        if self.dic_field_component.get() not in DIC_FIELD_COMPONENTS:
+            self.dic_field_component.set("u")
         self.results_df = None
         self.results_groups = None
         self._has_poisson = False
+        self._update_field_viewer_context()
         self._rebuild_field_viewer_plot()
         self._add_field_viewer_controls()
         self.viewer_placeholder.grid_remove()
         self.viewer_export_btn.config(state=tk.NORMAL)
         self.viewer_clear_btn.config(state=tk.NORMAL)
-        if self.current_fullres_img8 is not None:
-            try:
-                overlay = overlay_dic_field_on_image(
-                    self.current_fullres_img8,
-                    field,
-                    component=str(self.dic_field_component.get() or "u"),
-                )
-                self.auto_fit_enabled = False
-                self.display_img = overlay
-                h, w = overlay.shape[:2]
-                orig_h, orig_w = self.current_fullres_img8.shape[:2]
-                self.display_scale = w / max(orig_w, 1)
-                self.zoom_factor = self.display_scale
-                self.show_image()
-            except Exception:
-                pass
+        self._update_field_viewer_overlay()
         self.log("已更新全场 DIC 色图预览（可切换 u/v/Exx/Eyy/Exy）。")
+
+    def _update_field_viewer_context(self):
+        frame = self.dic_last_frame_1based
+        filename = self.dic_last_filename or "未知文件"
+        ref_frame = self.dic_last_reference_frame_1based
+        ref_filename = self.dic_last_reference_filename or "未知文件"
+        frame_text = f"第 {frame} 帧" if frame is not None else "帧未知"
+        ref_text = f"参考帧 {ref_frame}" if ref_frame is not None else "参考帧未知"
+        self.field_viewer_context_var.set(f"{frame_text}：{filename}；{ref_text}：{ref_filename}")
+
+    def _update_field_viewer_overlay(self):
+        if self.dic_last_field is None or self.dic_last_image is None:
+            return
+        try:
+            component = str(self.dic_field_component.get() or "u")
+            if component not in DIC_FIELD_COMPONENTS:
+                component = "u"
+                self.dic_field_component.set(component)
+            overlay = overlay_dic_field_on_image(
+                self.dic_last_image,
+                self.dic_last_field,
+                component=component,
+            )
+            self.auto_fit_enabled = False
+            self.display_img = overlay
+            _height, width = overlay.shape[:2]
+            orig_h, orig_w = np.asarray(self.dic_last_image).shape[:2]
+            self.display_scale = width / max(orig_w, 1)
+            self.zoom_factor = self.display_scale
+            self.show_image()
+        except Exception as exc:
+            self.log(f"全场 overlay 更新失败：{exc}")
 
     def _rebuild_field_viewer_plot(self):
         if self.dic_last_field is None:
@@ -6045,7 +6912,9 @@ class MultiROIGUI:
             component = "u"
         mesh = render_dic_field_on_axes(ax, self.dic_last_field, component)
         cbar = add_dic_colorbar(fig, ax, mesh, DIC_COMPONENT_LABELS.get(component, component), preset_name="raw_inspection")
-        ax.set_title(f"全场 {DIC_COMPONENT_LABELS.get(component, component)}")
+        context = self.field_viewer_context_var.get() if hasattr(self, "field_viewer_context_var") else ""
+        title_suffix = f"\n{context}" if context else ""
+        ax.set_title(f"全场 {DIC_COMPONENT_LABELS.get(component, component)}{title_suffix}")
         self._style_viewer_plot_fonts(ax)
         if getattr(self, "dark_mode", None) and self.dark_mode.get():
             self._style_viewer_axes_dark(ax)
@@ -6075,11 +6944,21 @@ class MultiROIGUI:
             state="readonly",
         )
         self.dic_component_box.pack(side=tk.LEFT, padx=4)
-        self.dic_component_box.bind("<<ComboboxSelected>>", lambda _e: self._rebuild_field_viewer_plot())
+        ttk.Label(
+            ctrl,
+            textvariable=self.field_viewer_context_var,
+            style="Hint.TLabel",
+            wraplength=360,
+        ).pack(side=tk.LEFT, padx=(10, 4))
+        self.dic_component_box.bind("<<ComboboxSelected>>", self._on_field_component_change)
         self.add_tooltip(
             self.dic_component_box,
             "选择叠加/预览的场：位移 u/v、相关质量 zncc，或 Green-Lagrange / 无穷小应变分量。",
         )
+
+    def _on_field_component_change(self, _event=None):
+        self._rebuild_field_viewer_plot()
+        self._update_field_viewer_overlay()
 
     def show_results_viewer(self, df, groups):
         """Embed an interactive matplotlib figure showing engineering strain (and optionally Poisson)."""
@@ -6410,6 +7289,13 @@ class MultiROIGUI:
         self._has_poisson = False
         self._viewer_mode = "strain"
         self.dic_last_field = None
+        self.dic_last_image = None
+        self.dic_last_frame_1based = None
+        self.dic_last_filename = None
+        self.dic_last_reference_frame_1based = None
+        self.dic_last_reference_filename = None
+        if hasattr(self, "field_viewer_context_var"):
+            self.field_viewer_context_var.set("")
         self._viewer_kind = "extensometer"
 
         # 恢复占位提示

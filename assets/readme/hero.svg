@@ -1,21 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
   <title id="title">ezDIC</title>
-  <desc id="desc">Lightweight virtual extensometer for linear strain from image sequences with QC and Origin-ready export.</desc>
+  <desc id="desc">Dual-mode virtual extensometer and in-plane full-field 2D DIC workstation for image sequences.</desc>
   <rect width="1200" height="360" rx="26" fill="#0B1018"/>
   <path d="M0 54H1200M700 0V360" stroke="#1A2230"/>
   <g transform="translate(56 42)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-    <text fill="#8A93A3" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" letter-spacing="2.2">VIRTUAL EXTENSOMETER · NOT FULL-FIELD DIC</text>
+    <text fill="#8A93A3" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" letter-spacing="2.2">DUAL-MODE DIC WORKSTATION · 1D + FULL-FIELD 2D</text>
     <text y="108" fill="#F5F3EC" font-family="Georgia,'Times New Roman',serif" font-size="72" font-weight="700" letter-spacing="-1.4">ezDIC</text>
-    <text y="158" fill="#B8C0CC" font-size="23">Linear strain from two ROI markers on an image sequence.</text>
+    <text y="158" fill="#B8C0CC" font-size="23">1D strain histories and in-plane maps from image sequences.</text>
     <path d="M0 186H500" stroke="#2A3444"/>
     <g transform="translate(0 220)" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">
       <text fill="#F5F3EC">ε_eng</text>
       <text x="84" fill="#7A8494">ε_true</text>
-      <text x="180" fill="#7A8494">QC</text>
-      <text x="236" fill="#7A8494">NaN on fail</text>
-      <text x="360" fill="#D4A84B">DOI</text>
+      <text x="180" fill="#7A8494">u/v · px</text>
+      <text x="276" fill="#7A8494">NaN on fail</text>
+      <text x="400" fill="#D4A84B">DOI</text>
     </g>
-    <text y="278" fill="#5A6474" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">10.5281/zenodo.20222465 · Windows portable</text>
+    <text y="278" fill="#5A6474" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">v0.1.4 · 2026-08-30 · 10.5281/zenodo.20222465 · Windows portable</text>
   </g>
   <g transform="translate(740 48)" fill="none">
     <rect width="400" height="264" fill="#111822" stroke="#2A3444"/>
@@ -27,7 +27,7 @@
     <text x="218" y="148" fill="#8FE3B8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13">L</text>
     <rect x="36" y="240" width="328" height="1" fill="#2A3444" stroke="none"/>
     <polyline points="40,250 90,246 140,238 190,228 240,220 290,214 340,210" fill="none" stroke="#6EC1FF" stroke-width="2"/>
-    <text x="36" y="278" fill="#5A6474" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11">engineering / true strain · Origin TXT</text>
+    <text x="36" y="278" fill="#5A6474" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11">1D core/ · full-field dic/ · optional Exx overlay</text>
   </g>
   <text x="1144" y="336" text-anchor="end" fill="#4A5464" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">D-sudoasd / ezDIC</text>
 </svg>

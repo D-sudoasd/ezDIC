@@ -1,0 +1,2 @@
+# Optional OriginPro OPJU export (Windows + OriginPro 2021+ required).
+originpro==1.1.15

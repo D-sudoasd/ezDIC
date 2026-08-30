@@ -7,6 +7,8 @@ datas = [
     ("README_使用说明.txt", "."),
     ("VERSION.txt", "."),
     ("NOTICE_Attribution_and_Usage.txt", "."),
+    ("LICENSE.txt", "."),
+    ("CITATION.cff", "."),
 ]
 datas += collect_data_files("matplotlib")
 
