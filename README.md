@@ -10,7 +10,25 @@
 
 Main/source version: **0.1.4** · release-ready source · 2026-08-30
 
-This source snapshot has no v0.1.4 tag, GitHub release, or portable ZIP. A v0.1.4 Windows ZIP can be downloaded only after a separate tag/release is created.
+This source snapshot has no v0.1.4 tag or GitHub release. Any local ZIP is an
+unverified working artifact; use the Releases page for a published, frozen-
+smoke-verified Windows asset.
+
+### v0.2.0 development target (not released)
+
+The current development branch contains a narrowly scoped research-grade
+upgrade. It does **not** bump `VERSION.txt`, `CITATION.cff`, the Zenodo record,
+or the DOI: those remain the v0.1.4 metadata of this source snapshot. The
+implemented development capability is a reproducible fixed-reference,
+local-subset, in-plane 2D DIC workflow plus the existing 1D virtual
+extensometer; it is not a claim of universal DIC superiority or experimental
+accuracy.
+
+The development target adds a GUI-independent core, reference-based
+percentile normalization, bounded coarse-to-fine multiscale initialization,
+IC-GN/IC-LM solver diagnostics, explicit point `valid` versus strain-fit
+`strain_valid`, and hash-linked run provenance. The locked synthetic benchmark
+is a regression gate, not an estimate of experimental uncertainty.
 
 ezDIC has two explicit workflows:
 
@@ -46,7 +64,11 @@ Full-field analysis uses the first frame in the selected analysis range as one f
 
 All images in the selected full-field range must have the same dimensions; a mismatch is a validation failure.
 
-Full-field output is transactional. A new run first writes its candidate files to a staging area. Only after the whole run completes normally are those files committed to the `dic/` root as the current result. Before the new run starts, old successful `frame_####*` files are retention-moved to `dic/_previous_runs/<timestamp>/`.
+Full-field output is transactional. A new run first writes its candidate files
+to a staging area. Only after the whole run completes normally are those files
+committed to the `dic/` root as the current result. At commit time, old
+successful `frame_####*` files are retention-moved to the output-root
+`_previous_runs/<run_id>/` (a sibling of `dic/`), never silently overwritten.
 
 The core output is fixed and is written under `dic/` for every analyzed deformation frame with a finite strain field. A failed frame is not exported as a successful result:
 
@@ -64,9 +86,15 @@ dic/
 
 `x`, `y`, `u`, and `v` are in **px**. All strain components are **dimensionless**. `Exx`, `Eyy`, and `Exy` are Green–Lagrange components; `exx`, `eyy`, and `exy` are infinitesimal components. `Exy`/`exy` are **tensor shear components** (the off-diagonal strain terms), not engineering shear values with an extra factor of two.
 
-The `valid` column records whether a POI correlation passed the quality threshold. Failed points are exported as `NaN` for numeric fields and are not interpolated or filled. A frame with no finite strain field is a **normally skipped failed frame**: it contributes no current-frame files, but other valid frames may still be committed if the run has no fatal error. If no analyzed deformation frame has valid strain points, the full-field run fails and is not reported as completed.
+The `valid` column records whether a POI correlation passed the quality threshold. Failed points are exported as `NaN` for measurement fields (`u`/`v`, strain, and quality fields as applicable); `x`/`y` remain the POI grid coordinates. Failed measurements are not interpolated or filled. A frame with no finite strain field is a **normally skipped failed frame**: it contributes no current-frame files, but other valid frames may still be committed if the run has no fatal error. If no analyzed deformation frame has valid strain points, the full-field run fails and is not reported as completed.
 
-If a fatal I/O, solver, or export exception interrupts the run, the staging files already produced by that run are retention-moved to `dic/_failed_runs/<timestamp>/`; they are never left in the `dic/` root as if they were current successful output. The run reports failure rather than committing a partial result. This is distinct from a normally skipped no-finite-strain frame. Old successful outputs remain traceable in `dic/_previous_runs/<timestamp>/`.
+If a fatal I/O, solver, or export exception interrupts the run, the staging
+files already produced by that run are retention-moved to the output-root
+`_failed_runs/<run_id>/`; they are never left in the `dic/` root as if they were
+current successful output. The run reports failure rather than committing a
+partial result. This is distinct from a normally skipped no-finite-strain
+frame. Old successful outputs remain traceable in output-root
+`_previous_runs/<run_id>/`.
 
 Each valid frame also gets `frame_####_parameters.txt`, a human-readable provenance record. It records the fixed `reference_frame_1based` and `reference_filename`, the analyzed `frame_global_1based` and `frame_filename`, `field_roi`, image shape, and effective `subset_size_px`, `step_px`, `strain_window`, `solver`, `zncc_min`, and smoothing settings (plus the sequence fingerprint when available).
 
@@ -100,7 +128,7 @@ Failed tracking frames stay `NaN`. Poisson uses role-averaged groups; tiny axial
 
 ## Windows quick start
 
-1. Open the [Releases page](https://github.com/D-sudoasd/ezDIC/releases) and download a Windows x64 asset for a version that is currently listed there. This source snapshot does not provide a v0.1.4 ZIP; that ZIP becomes available only after a separate v0.1.4 tag/release is created.
+1. Open the [Releases page](https://github.com/D-sudoasd/ezDIC/releases) and download a published, frozen-smoke-verified Windows x64 asset for a version that is currently listed there. An unverified local ZIP is not a release asset.
 2. Extract the full downloaded folder; the portable package's top-level directory is `ezDIC_Windows_x64`. Keep `_internal/` next to `ezDIC.exe` and retain the license, citation, version, and notice files.
 3. Run `ezDIC.exe` on Windows 10/11 x64.
 
@@ -119,6 +147,132 @@ For tests and the release-build toolchain, install the pinned build/test set:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
+### Headless CLI (v0.2.0-dev source and frozen contract)
+
+The implemented source CLI is GUI-independent and reads strict UTF-8 JSON
+configuration against `schemas/run_config_v1.json`. Relative paths resolve next
+to the configuration file; non-finite numbers, unknown keys, invalid mode
+fields, and unsupported input shapes are rejected. `image_paths` and
+`image_folder` are mutually exclusive. A folder is collected with ezDIC's
+natural image ordering and supported image suffixes. Keep analysis outputs and
+benchmark reports outside the repository (for example under a caller-owned
+temporary directory).
+
+The following are minimal complete configurations. Replace the example image
+and output paths with real paths; the field names are the schema field names.
+The 1D reference must equal `start_frame_1based`; the 2D field-ROI reference
+must equal `reference_frame_1based`. A 2D run processes the selected reference
+first for initialization, then correlates every other selected frame to that
+same fixed reference.
+
+```json
+{
+  "schema_version": 1,
+  "analysis_mode": "extensometer",
+  "image_paths": [
+    "C:/data/seq/frame_001.png",
+    "C:/data/seq/frame_002.png"
+  ],
+  "start_frame_1based": 1,
+  "end_frame_1based": 2,
+  "reference_frame_1based": 1,
+  "output_dir": "C:/data/ezdic_1d_output",
+  "roi_groups": [
+    {
+      "name": "axial",
+      "roi1": [10, 20, 21, 21],
+      "roi2": [100, 20, 21, 21],
+      "strain_mode": "x",
+      "role": "axial"
+    }
+  ],
+  "tracking": {
+    "template_policy": "fixed_reference",
+    "use_prev_frame_template": false
+  },
+  "quality": {
+    "min_valid_frames": 1,
+    "min_strain_valid_fraction": 0.8,
+    "enable_fb_check": true
+  },
+  "normalization": {
+    "policy": "reference_percentile",
+    "clip": true
+  },
+  "export": { "write_manifest": true },
+  "transaction": { "enabled": true },
+  "metadata": {}
+}
+```
+
+```json
+{
+  "schema_version": 1,
+  "analysis_mode": "fullfield",
+  "image_paths": [
+    "C:/data/seq/frame_001.png",
+    "C:/data/seq/frame_002.png"
+  ],
+  "start_frame_1based": 1,
+  "end_frame_1based": 2,
+  "reference_frame_1based": 1,
+  "output_dir": "C:/data/ezdic_2d_output",
+  "field_roi": [20, 20, 120, 100],
+  "solver": {
+    "name": "IC-GN",
+    "subset_size_px": 21,
+    "step_px": 5,
+    "strain_window_px": 5
+  },
+  "pyramid": { "levels": 1, "scale": 0.5 },
+  "quality": {
+    "min_correlation_valid_fraction": 0.95,
+    "min_strain_valid_fraction": 0.8
+  },
+  "normalization": {
+    "policy": "reference_percentile",
+    "clip": true
+  },
+  "export": { "write_manifest": true },
+  "transaction": { "enabled": true },
+  "metadata": {}
+}
+```
+
+```powershell
+# Validate and execute the current source contract
+py -3.11 -m ezdic_cli validate-config --config .\run_config.json
+py -3.11 -m ezdic_cli run --config .\run_config.json
+py -3.11 -m ezdic_cli run --config .\run_config.json --progress-json
+py -3.11 -m ezdic_cli verify-manifest --manifest <output_dir>\run_manifest.json
+py -3.11 -m ezdic_cli benchmark --output $env:TEMP\ezdic-benchmark
+```
+
+Exit codes are stable: `0` means configuration, execution, scientific gate,
+and manifest verification all passed; `2` means configuration/usage or
+preflight failure; `3` means an I/O, solver, export, or other runtime failure;
+and `4` means a scientific gate or manifest-verification failure.
+`run --progress-json` emits line-delimited JSON `run_started`, `progress`, and
+`run_finished` events while retaining the same exit-code contract. The source
+entrypoint is `python ezdic_cli.py`; the frozen onedir bundle exposes the same
+contract as `ezDIC-cli.exe` alongside the windowed `ezDIC.exe`.
+
+Headless runs use the same fixed reference and numerical core as the GUI. Their
+transaction lifecycle is the output root's current `core/`, `qc/`, `optional/`,
+or `dic/` files, recoverable sibling `_previous_runs/<run_id>/` archives, and
+retained fatal-run sibling `_failed_runs/<run_id>/` staging. Existing current
+outputs are archived only during commit; a failed run does not replace them.
+The registration row in a 1D result is a reference baseline and is excluded
+from the scientific deformation-frame gate. A failed POI may retain its `x`/`y`
+grid coordinates, while measurement fields (`u`/`v`, strain, and applicable
+quality fields) remain `NaN`.
+
+A run manifest binds canonical configuration, ordered input identities and
+hashes, image shape/dtype, normalization bounds, code/environment fingerprints,
+output inventory and hashes, status, and the scientific gate.
+`verify-manifest` recomputes this contract and detects changed, missing,
+unexpected, or tampered manifest-listed files without modifying user data.
+
 The optional Origin OPJU export additionally requires Windows, OriginPro 2021+, a valid local OriginPro license, and `requirements-origin.txt`:
 
 ```powershell
@@ -127,9 +281,61 @@ The optional Origin OPJU export additionally requires Windows, OriginPro 2021+, 
 
 Build a Windows portable package with `powershell -File .\build_release.ps1`. The build script validates release metadata, runs its checks fail-closed, and copies the support files into the package.
 
+The development portable build is an onedir package containing `ezDIC.exe`,
+`ezDIC-cli.exe`, the GUI-independent core/CLI/benchmark modules, and
+`schemas/run_config_v1.json`. The wrapper's `--smoke-test` path imports the
+core/CLI/benchmark contract before any Tk root and performs read-only checks.
+It writes a marker only when `EZDIC_FROZEN_SMOKE_MARKER` points to a
+caller-provided temporary path.
+
+The default 1D tracking policy is a fixed reference template
+(`template_policy=fixed_reference`, `use_prev_frame_template=false`).
+`follow_deformed_experimental` is available only when explicitly enabled and
+is not part of the fixed-reference claim. For full-field quality, the
+`best_to_second_peak_ratio_min` value means `best_peak / second_peak`; larger
+is better and the default lower bound is 1.02. It is not the inverse
+`second_peak / best_peak` ratio. The positive coverage defaults are a minimum
+0.95 correlation-valid fraction and 0.80 strain-valid fraction; they can be
+made stricter in a caller configuration but are never silently relaxed.
+
+The locked v5 synthetic engineering gate currently records the following clean
+baseline values (`report_version=ezdic-benchmark-report-v5`,
+`cases_version=ezdic-benchmark-cases-v3`, locked case hash
+`3dbe0dae3fdf8f30ec32c9fd8f036f0a53b4a705380626e7860773f62f31cb20`):
+
+| Case | Measured value | Gate |
+| --- | ---: | ---: |
+| Small translation `[2.3, -1.2]` | RMSE **0.0199391 px**, P95 **0.0292620 px**, max **0.0325828 px** | strict clean baseline |
+| Large translation `[28, -18]`, 3 pyramid levels, search radius 8 | RMSE **0.0115297 px**, P95 **0.0239809 px**, max **0.0269902 px** | strict clean baseline |
+| Affine field | displacement RMSE **0.00363440 px**, P95 **0.00651265 px**, max **0.0103737 px** | strict clean baseline |
+| Affine strain | max component error **0.000273879**, consistency error **0.000270908** | strict clean baseline |
+| Near-1D periodic texture | typed `AMBIGUOUS_TEXTURE` before solver/export; `solver_calls=0`, 0 artifacts | typed rejection; artifacts = 0 |
+
+The quality-score v1 ranking covers **567 numeric solver rows**: **563 good**
+and **4 bad** labels, including **2 rejected bad** rows. It records
+ROC-AUC **0.994227353463588** with error tolerance **0.25 px** (gate ≥ 0.90).
+The illustrative threshold is explicitly `NOT_CALIBRATED`,
+`quality_threshold_evaluated=false`, and `quality_threshold_pass=null`; it is
+not a calibrated binary acceptance rule. Under finite-error labels the false
+accept count is **2/2 = 100%**; under ranking outcomes it is **2/4 = 50%**.
+The JSON report is hash-linked to its non-empty per-point CSV. These rates and
+the ranking AUC must not be read as experimental accuracy, uncertainty, or
+natural-texture performance.
+In plain terms, this quality threshold is **not calibrated**.
+
+The canonical evidence CSV SHA-256 is
+`39d4e52f35cd3161a1e877b6edcd5187568bf275c6c8d552422605b73b4c0bfb`.
+
+These are deterministic synthetic engineering-gate observations for the locked
+geometry, seeds, clean baselines, and image-corruption panel. They are not
+experimental uncertainty, calibration validation, or evidence that ezDIC is
+more accurate or robust than every other DIC project.
+
 ## Scientific and implementation limits
 
-Full-field DIC is an in-plane local-subset method using IC-GN / IC-LM with a first-order affine subset warp. It reports a POI grid, not per-pixel values; it is not stereo / 3D DIC, DVC, GPU/MPI, SIFT-guided DIC, or global B-spline FEM. Pixel coordinates and displacements remain in px unless the user supplies an external calibration; strain values are dimensionless. Failed subsets stay `NaN`, and finite output is not by itself experimental validation or uncertainty quantification.
+Full-field DIC is an in-plane local-subset method using IC-GN / IC-LM with a first-order affine subset warp. It reports a POI grid, not per-pixel values; it is not stereo / 3D DIC, DVC, GPU/MPI, SIFT/AKAZE feature guidance, crack-topology masking, or global finite-element DIC. Arbitrary experimental texture is not an accepted capability claim. Pixel coordinates and displacements remain in px unless the user supplies an external calibration; strain values are dimensionless. Experimental calibration and uncertainty quantification are not implemented in this target. Failed subsets stay `NaN`, and finite output or a passing synthetic gate is not by itself experimental validation.
+
+Relative to projects with stereo/3D, DVC, global-FE, GPU/MPI, or broader feature-guided solvers, ezDIC deliberately does not claim those capabilities. Its intended narrow advantage is an auditable local workflow for the fixed-reference 2D tensile-image scenario: one numerical core, deterministic normalization, explicit quality/strain validity, transactional output, and reproducible synthetic gates.
 
 ## Cite
 

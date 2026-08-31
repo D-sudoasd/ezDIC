@@ -40,6 +40,7 @@ import queue
 import shutil
 import threading
 import traceback
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -178,6 +179,18 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, font as tkfont
 
 from PIL import Image, ImageTk
+
+# The numerical/export implementation lives in the Tk-free core.  Importing
+# this module still defines the legacy GUI adapter only; no Tk root is created
+# until ``main`` is called.
+#
+# ARCHITECTURAL EXCEPTION (v0.2 stabilization): the pre-core GUI numerical and
+# export bodies below remain only behind the explicit ``_legacy_direct_processing``
+# compatibility switch for old integrations.  The normal GUI path delegates to
+# ``ezdic_core`` and uses its bundle-aware provenance resolver.  Removing the
+# legacy bodies is deferred until that compatibility switch is retired; the
+# canonical module-level aliases at the end of this file are regression-tested.
+import ezdic_core as _core
 
 
 APP_NAME = "ezDIC"
@@ -524,31 +537,143 @@ def _atomic_move_entries(entries, label, *, after_move=None):
 
 
 def archive_previous_fullfield_outputs(dic_dir):
-    """Move only known ezDIC frame outputs into a timestamped archive."""
+    """Move exact legacy full-field outputs under the core transaction guards.
+
+    The legacy GUI path predates the manifest ledger, so it retains the
+    conservative exact-name allowlist above.  It must nevertheless obey the
+    same filesystem boundary as the manifest transaction: all output and
+    destination ancestors are checked before enumeration or directory
+    creation, and each move uses the core's no-replace primitive (which also
+    applies the Windows directory-handle guards).  These are deliberately
+    private core calls because this compatibility migration has no public
+    transaction API of its own.
+    """
     dic_dir = Path(dic_dir)
+    output_root = dic_dir.parent
+    previous_root = dic_dir / "_previous_runs"
+
+    def assert_safe(path, *, allow_missing_leaf):
+        _core._assert_no_reparse_components(path, allow_missing_leaf=allow_missing_leaf)
+
+    def assert_contained(path, *, code):
+        _core._assert_contained_path(path, output_root, code=code)
+
+    # Resolve no links before any exists/is_dir check.  In particular, a
+    # junction at output_root/dic must fail before it can be enumerated.
+    assert_safe(output_root, allow_missing_leaf=True)
+    assert_safe(dic_dir, allow_missing_leaf=True)
+    assert_contained(dic_dir, code="LEGACY_OUTPUT_OUTSIDE_ROOT")
+    assert_safe(previous_root, allow_missing_leaf=True)
+    assert_contained(previous_root, code="LEGACY_ARCHIVE_OUTSIDE_ROOT")
+
     if not dic_dir.exists() or not dic_dir.is_dir():
         return None
-    previous_files = [
-        path
-        for path in dic_dir.iterdir()
-        if path.is_file() and FULLFIELD_GENERATED_FILE_RE.fullmatch(path.name)
-    ]
-    if not previous_files:
-        return None
 
-    archive_dir = _create_unique_timestamped_dir(dic_dir / "_previous_runs")
-    entries = [(path, archive_dir / path.name) for path in sorted(previous_files, key=lambda p: p.name)]
-    try:
-        _atomic_move_entries(entries, "全场旧结果归档")
-    except Exception:
-        # A failed archive leaves the original root files restored.  Remove
-        # only the now-empty timestamp directory; non-empty diagnostics stay.
-        try:
-            archive_dir.rmdir()
-        except OSError:
-            pass
-        raise
-    return archive_dir
+    # Match the core's operation lock and in-process lock ordering.  The
+    # second preflight closes the gap between the initial check and lock
+    # acquisition before the directory is inspected or changed.
+    with _core._operation_os_lock(output_root):
+        with _core._transaction_lock(output_root):
+            assert_safe(output_root, allow_missing_leaf=False)
+            assert_safe(dic_dir, allow_missing_leaf=False)
+            assert_contained(dic_dir, code="LEGACY_OUTPUT_OUTSIDE_ROOT")
+            assert_safe(previous_root, allow_missing_leaf=True)
+            assert_contained(previous_root, code="LEGACY_ARCHIVE_OUTSIDE_ROOT")
+
+            if not dic_dir.exists() or not dic_dir.is_dir():
+                return None
+
+            # A non-directory destination parent is unusable and, like a
+            # reparse point, must be rejected before source enumeration.
+            if previous_root.exists() and not previous_root.is_dir():
+                raise RuntimeError(f"全场旧结果归档失败：归档目录不是文件夹：{previous_root}")
+
+            # Select and validate the eventual destination chain before
+            # enumerating legacy files.  The parent may be missing, so this
+            # remains read-only until all source checks have completed.
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            archive_name = timestamp
+            suffix = 1
+            while True:
+                archive_dir = previous_root / archive_name
+                assert_safe(archive_dir, allow_missing_leaf=True)
+                assert_contained(archive_dir, code="LEGACY_ARCHIVE_OUTSIDE_ROOT")
+                if not archive_dir.exists():
+                    break
+                archive_name = f"{timestamp}_{suffix:02d}"
+                suffix += 1
+
+            previous_files = []
+            for path in dic_dir.iterdir():
+                if not FULLFIELD_GENERATED_FILE_RE.fullmatch(path.name):
+                    continue
+                # A matching symlink/junction is not a user-owned exception:
+                # reject it before creating an archive directory or moving a
+                # different legacy file.
+                assert_safe(path, allow_missing_leaf=False)
+                if path.is_file():
+                    assert_contained(path, code="LEGACY_OUTPUT_OUTSIDE_ROOT")
+                    previous_files.append(path)
+            if not previous_files:
+                return None
+
+            # Keep the destination parent containment check adjacent to the
+            # source preflight; its reparse check above ran before enumeration.
+            assert_contained(previous_root, code="LEGACY_ARCHIVE_OUTSIDE_ROOT")
+
+            entries = []
+            for source in sorted(previous_files, key=lambda p: p.name):
+                destination = archive_dir / source.name
+                assert_safe(source, allow_missing_leaf=False)
+                # The final archive directory may not exist yet, so this
+                # check validates its complete existing ancestor chain while
+                # still keeping directory creation below the preflight.
+                assert_safe(destination.parent, allow_missing_leaf=True)
+                assert_contained(source, code="LEGACY_OUTPUT_OUTSIDE_ROOT")
+                assert_contained(destination.parent, code="LEGACY_ARCHIVE_OUTSIDE_ROOT")
+                if not source.is_file():
+                    raise RuntimeError(f"全场旧结果归档失败：源文件已变化：{source}")
+                entries.append((source, destination))
+
+            # Recheck and create the destination only after all legacy source
+            # and destination paths have passed the read-only preflight.
+            assert_safe(previous_root, allow_missing_leaf=True)
+            previous_root.mkdir(parents=True, exist_ok=True)
+            assert_safe(previous_root, allow_missing_leaf=False)
+            assert_contained(previous_root, code="LEGACY_ARCHIVE_OUTSIDE_ROOT")
+            archive_dir.mkdir()
+            assert_safe(archive_dir, allow_missing_leaf=False)
+            assert_contained(archive_dir, code="LEGACY_ARCHIVE_OUTSIDE_ROOT")
+            for _source, destination in entries:
+                assert_safe(destination.parent, allow_missing_leaf=False)
+                if destination.exists() or destination.is_symlink():
+                    raise RuntimeError(f"全场旧结果归档失败：目标已存在：{destination}")
+
+            moved = []
+            try:
+                for source, destination in entries:
+                    # _move_exact supplies no-replace publication, containment
+                    # rechecks, and Windows directory-handle protection.
+                    _core._move_exact(source, destination, root=output_root)
+                    moved.append((source, destination))
+            except Exception as exc:
+                rollback_errors = []
+                for source, destination in reversed(moved):
+                    try:
+                        _core._move_exact(destination, source, root=output_root)
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"{destination} -> {source}: {rollback_exc}")
+                try:
+                    assert_safe(archive_dir, allow_missing_leaf=False)
+                    assert_contained(archive_dir, code="LEGACY_ARCHIVE_OUTSIDE_ROOT")
+                    archive_dir.rmdir()
+                except OSError:
+                    pass
+                detail = f"全场旧结果归档失败：{exc}"
+                if rollback_errors:
+                    detail += "；回滚失败：" + " | ".join(rollback_errors)
+                raise RuntimeError(detail) from exc
+            return archive_dir
 
 
 def commit_fullfield_staging(staging_dir, dic_dir):
@@ -1153,6 +1278,181 @@ def validate_image_sequence_dimensions(paths):
                 f"{Path(path).name} 为 {shape[1]}×{shape[0]} px。"
             )
     return reference_shape
+
+
+def validate_fullfield_snapshot(settings):
+    """Validate a frozen full-field settings snapshot without touching Tk.
+
+    ``start_processing`` freezes all GUI values into ``settings`` before it
+    starts the worker.  This helper is deliberately module-level and only
+    consumes that mapping plus the selected image files, so it is safe to run
+    from a worker thread.  It also keeps legacy-output migration behind the
+    same read-only checks used by the GUI-side preflight.
+    """
+    if not isinstance(settings, Mapping):
+        raise RuntimeError("全场 DIC 设置快照必须是映射。")
+
+    raw_paths = settings.get("image_paths")
+    if isinstance(raw_paths, (str, bytes)):
+        raise RuntimeError("全场 DIC 图像路径快照无效。")
+    try:
+        image_paths = list(raw_paths or [])
+    except TypeError as exc:
+        raise RuntimeError("全场 DIC 图像路径快照无效。") from exc
+    if not image_paths:
+        raise RuntimeError("请先加载图像序列。")
+
+    def snapshot_int(key, label, default=None):
+        value = settings.get(key, default)
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError(f"{label}必须是整数。") from exc
+
+    def snapshot_float(key, label, default=None):
+        value = settings.get(key, default)
+        try:
+            value = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError(f"{label}必须是数字。") from exc
+        if not np.isfinite(value):
+            raise RuntimeError(f"{label}必须是有限数字。")
+        return value
+
+    start_idx = snapshot_int("start_idx", "起始帧", 0)
+    end_idx = snapshot_int("end_idx", "结束帧", len(image_paths) - 1)
+    if start_idx < 0 or end_idx < start_idx or end_idx >= len(image_paths):
+        raise RuntimeError("全场 DIC 的分析范围无效。")
+    if end_idx <= start_idx:
+        raise RuntimeError("分析范围至少应包含两帧（参考帧 + 变形帧）。")
+
+    reference_frame = snapshot_int(
+        "reference_frame_1based",
+        "参考帧",
+        start_idx + 1,
+    )
+    if reference_frame < start_idx + 1 or reference_frame > end_idx + 1:
+        raise RuntimeError(
+            "全场 DIC 的参考帧必须位于当前分析范围内："
+            f"reference={reference_frame}, range={start_idx + 1}–{end_idx + 1}。"
+        )
+    field_ref = settings.get("field_roi_reference_frame_1based")
+    if field_ref is None:
+        raise RuntimeError("全场 ROI 缺少绘制参考帧记录，请在当前起始/参考帧重画。")
+    try:
+        field_ref = int(field_ref)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError("全场 ROI 的参考帧记录必须是整数。") from exc
+    if field_ref != reference_frame:
+        raise RuntimeError(
+            f"全场 ROI 在第 {field_ref} 帧定义，但冻结参考帧为第 {reference_frame} 帧，请重画全场 ROI。"
+        )
+
+    output_value = settings.get("output_dir")
+    if output_value is None or not str(output_value).strip():
+        raise RuntimeError("请设置输出文件夹。")
+    try:
+        output_path = Path(output_value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("输出文件夹路径无效。") from exc
+    if output_path.exists() and not output_path.is_dir():
+        raise RuntimeError(f"输出路径已存在但不是文件夹：{output_path}")
+
+    selected_paths = image_paths[start_idx : end_idx + 1]
+    image_shape = validate_image_sequence_dimensions(selected_paths)
+    try:
+        reference_raw = read_gray_image(image_paths[reference_frame - 1])
+    except Exception as exc:
+        raise RuntimeError(f"全场 DIC 无法读取参考图像：{exc}") from exc
+    if image_shape is None:
+        image_shape = reference_raw.shape[:2]
+
+    roi = settings.get("field_roi")
+    if roi is None:
+        raise RuntimeError("请先绘制全场分析 ROI。")
+    if not rect_is_inside_image(roi, image_shape):
+        raise RuntimeError("全场 ROI 必须完整位于参考图像内。")
+
+    try:
+        normalization = settings.get("normalization")
+        if normalization:
+            reference8 = normalize_with_bounds(reference_raw, normalization)
+        else:
+            reference8 = normalize_to_uint8(reference_raw)
+    except Exception as exc:
+        raise RuntimeError(f"全场 DIC 参考图像归一化失败：{exc}") from exc
+
+    min_texture_std = snapshot_float("min_texture_std", "最小纹理标准差", 8.0)
+    min_texture_contrast = snapshot_float("min_texture_contrast", "最小纹理对比度", 25.0)
+    max_saturated_frac = snapshot_float("max_saturated_frac", "最大近黑/近白比例", 0.20)
+    min_structure_ratio = snapshot_float(
+        "min_structure_ratio",
+        "最小二维结构张量比值",
+        _core.DEFAULT_TEXTURE_MIN_STRUCTURE_RATIO,
+    )
+    max_directional_coherence = snapshot_float(
+        "max_directional_coherence",
+        "最大方向梯度一致性",
+        _core.DEFAULT_TEXTURE_MAX_DIRECTIONAL_COHERENCE,
+    )
+    min_periodicity_score = snapshot_float(
+        "min_periodicity_score",
+        "最小周期性分数",
+        _core.DEFAULT_TEXTURE_MIN_PERIODICITY_SCORE,
+    )
+    metrics = roi_texture_metrics(reference8, roi)
+    texture_code = texture_failure_code(
+        metrics,
+        min_texture_std,
+        min_texture_contrast,
+        max_saturated_frac,
+        min_structure_ratio,
+        max_directional_coherence,
+        min_periodicity_score,
+    )
+    # The GUI adapter intentionally lets low/saturated texture reach the core
+    # so it can retain a structured invalid-frame record.  Ambiguous texture
+    # and malformed thresholds remain hard preflight failures.
+    if texture_code == "AMBIGUOUS_TEXTURE":
+        raise RuntimeError("AMBIGUOUS_TEXTURE：全场 ROI 的二维纹理不可辨识，请更换或增大 ROI。")
+    if texture_code not in (None, "LOW_TEXTURE", "SATURATED_TEXTURE"):
+        raise RuntimeError(f"全场 DIC 纹理预检失败：{texture_code}")
+
+    subset = snapshot_int("dic_subset_size", "子集尺寸")
+    step = snapshot_int("dic_step", "步长")
+    window = snapshot_int("dic_strain_window", "应变窗口")
+    search_radius = snapshot_int("dic_search_radius", "DIC 搜索半径")
+    zncc_min = snapshot_float("dic_zncc_min", "ZNCC 下限")
+    smooth_sigma = snapshot_float("dic_smooth_sigma", "高斯平滑 σ")
+    pyramid_levels = snapshot_int("dic_pyramid_levels", "金字塔层数", 1)
+    pyramid_scale = snapshot_float("dic_pyramid_scale", "金字塔缩放", 0.5)
+    solver = str(settings.get("dic_solver", DIC_SOLVER_ICGN))
+    if subset < 9:
+        raise RuntimeError("子集尺寸必须 >= 9。")
+    if subset % 2 == 0:
+        raise RuntimeError("子集尺寸必须为奇数；请使用 21、23 等值。")
+    if step < 1:
+        raise RuntimeError("步长必须 >= 1。")
+    if window < 3:
+        raise RuntimeError("应变窗口必须 >= 3。")
+    if window % 2 == 0:
+        raise RuntimeError("应变窗口必须为奇数；请使用 5、7 等值。")
+    if search_radius < 1:
+        raise RuntimeError("DIC 搜索半径必须 > 0。")
+    if not (0.0 <= zncc_min <= 1.0):
+        raise RuntimeError("ZNCC 下限应在 0 到 1 之间。")
+    if smooth_sigma < 0:
+        raise RuntimeError("高斯平滑 σ 不能为负。")
+    if not (1 <= pyramid_levels <= 8):
+        raise RuntimeError("金字塔层数应在 1 到 8 之间。")
+    if not (0.0 < pyramid_scale < 1.0):
+        raise RuntimeError("金字塔缩放应在 0 到 1 之间。")
+    if solver not in DIC_SOLVERS:
+        raise RuntimeError("求解器必须是 IC-GN 或 IC-LM。")
+
+    X, Y = build_poi_grid(roi, subset, step, image_shape)
+    if not poi_grid_is_usable(X, Y, min_rows=3, min_cols=3):
+        raise RuntimeError("当前 ROI / 子集 / 步长至少需要 3×3 个可分析的 2D POI，请增大 ROI 或减小步长。")
 
 
 def fullfield_field_has_finite_strain(field):
@@ -2488,7 +2788,9 @@ class MultiROIGUI:
         self._applying_preset = False
 
         self.enable_adaptive = tk.BooleanVar(value=True)
-        self.use_prev_frame_template = tk.BooleanVar(value=True)
+        # Fixed-reference templates are the reproducible default.  Following
+        # the current frame remains an explicit experimental option.
+        self.use_prev_frame_template = tk.BooleanVar(value=False)
         self.template_alpha = tk.DoubleVar(value=0.70)
         self.max_frame_strain_jump = tk.StringVar(value="0.01")
 
@@ -2539,6 +2841,11 @@ class MultiROIGUI:
         self.dic_smooth_sigma = tk.DoubleVar(value=0.0)
         self.dic_search_radius = tk.IntVar(value=20)
         self.dic_zncc_min = tk.DoubleVar(value=0.75)
+        # Multiscale recovery controls.  Defaults preserve the historical
+        # single-level solver and are persisted only as optional recent-state
+        # fields, so older snapshots remain valid.
+        self.dic_pyramid_levels = tk.IntVar(value=1)
+        self.dic_pyramid_scale = tk.DoubleVar(value=0.5)
         self.dic_field_component = tk.StringVar(value="u")
         self.field_roi = None
         self.roi1_reference_frame_1based = None
@@ -2631,6 +2938,8 @@ class MultiROIGUI:
             self.dic_smooth_sigma,
             self.dic_search_radius,
             self.dic_zncc_min,
+            self.dic_pyramid_levels,
+            self.dic_pyramid_scale,
         ]:
             var.trace_add("write", self._on_gui_state_change)
 
@@ -2735,6 +3044,19 @@ class MultiROIGUI:
             self.image_folder.set(image_dir)
         if output_dir and not self.output_folder.get().strip():
             self.output_folder.set(output_dir)
+        # Optional fields were added after the original two-path snapshot.
+        # Ignore absent/invalid values so old snapshots remain loadable.
+        try:
+            if "pyramid_levels" in data:
+                value = int(data["pyramid_levels"])
+                if 1 <= value <= 8:
+                    self.dic_pyramid_levels.set(value)
+            if "pyramid_scale" in data:
+                value = float(data["pyramid_scale"])
+                if 0.0 < value < 1.0:
+                    self.dic_pyramid_scale.set(value)
+        except (TypeError, ValueError, tk.TclError):
+            pass
 
     def save_recent_paths(self):
         try:
@@ -2743,6 +3065,8 @@ class MultiROIGUI:
             payload = {
                 "image_dir": self.recent_image_dir,
                 "output_dir": self.recent_output_dir,
+                "pyramid_levels": int(self.dic_pyramid_levels.get()),
+                "pyramid_scale": float(self.dic_pyramid_scale.get()),
             }
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
@@ -2829,6 +3153,26 @@ class MultiROIGUI:
                 x, y, w, h = field_roi
                 items.append(self._preflight_item("ok", "全场 ROI", f"ROI {w}×{h} px @ ({x},{y})。"))
 
+            if field_roi is not None and has_sequence and rect_is_inside_image(field_roi, self.first_img8.shape):
+                metrics, texture_code = self._core_texture_metrics_and_code(field_roi)
+                if texture_code is not None:
+                    level = "block" if texture_code == "AMBIGUOUS_TEXTURE" else "warn"
+                    items.append(
+                        self._preflight_item(
+                            level,
+                            "纹理",
+                            f"{texture_code}：二维结构张量比值={metrics['structure_tensor_ratio']:.4f}。",
+                        )
+                    )
+                else:
+                    items.append(
+                        self._preflight_item(
+                            "ok",
+                            "纹理",
+                            f"二维纹理可辨识，结构张量比值={metrics['structure_tensor_ratio']:.4f}。",
+                        )
+                    )
+
             if field_roi is not None and start is not None:
                 field_ref = self.field_roi_reference_frame_1based
                 if field_ref is None:
@@ -2888,6 +3232,20 @@ class MultiROIGUI:
                 items.append(self._preflight_item("block", "DIC 参数", "子集、步长、应变窗口和高斯平滑必须是有效数字。"))
         elif self.roi_groups:
             items.append(self._preflight_item("ok", "ROI 组", f"已添加 {len(self.roi_groups)} 组。"))
+            if has_sequence:
+                for group in self.roi_groups:
+                    for label, rect in (("ROI1", group.get("roi1")), ("ROI2", group.get("roi2"))):
+                        metrics, texture_code = self._core_texture_metrics_and_code(rect)
+                        if texture_code is None:
+                            continue
+                        level = "block" if texture_code == "AMBIGUOUS_TEXTURE" else "warn"
+                        items.append(
+                            self._preflight_item(
+                                level,
+                                "纹理",
+                                f"{group['name']} {label}: {texture_code}，结构张量比值={metrics['structure_tensor_ratio']:.4f}。",
+                            )
+                        )
         else:
             items.append(self._preflight_item("block", "ROI 组", "请至少添加一组 ROI1/ROI2。"))
 
@@ -3681,6 +4039,26 @@ class MultiROIGUI:
         self.add_tooltip(
             self.dic_smooth_sigma_entry,
             "求导前对 u/v 做高斯平滑的 σ（像素网格单位）。0 表示不平滑。过大会低估应变峰值。",
+        )
+
+        ttk.Label(self.fullfield_frame, text="金字塔层数").grid(row=5, column=0, sticky="w", padx=(0, 6), pady=1)
+        self.dic_pyramid_levels_entry = ttk.Entry(
+            self.fullfield_frame, textvariable=self.dic_pyramid_levels, width=8
+        )
+        self.dic_pyramid_levels_entry.grid(row=5, column=1, sticky="w", pady=1)
+        self.add_tooltip(
+            self.dic_pyramid_levels_entry,
+            "多尺度图像金字塔层数。1 表示兼容的单尺度求解；较大位移可尝试 2–4，但需检查每层 ROI 支持。",
+        )
+
+        ttk.Label(self.fullfield_frame, text="金字塔缩放").grid(row=6, column=0, sticky="w", padx=(0, 6), pady=1)
+        self.dic_pyramid_scale_entry = ttk.Entry(
+            self.fullfield_frame, textvariable=self.dic_pyramid_scale, width=8
+        )
+        self.dic_pyramid_scale_entry.grid(row=6, column=1, sticky="w", pady=1)
+        self.add_tooltip(
+            self.dic_pyramid_scale_entry,
+            "相邻金字塔层缩放比例（0<scale<1）。默认 0.5；只有层数大于 1 时生效。",
         )
 
         draw_row = ttk.Frame(self.fullfield_frame, style="Card.TFrame")
@@ -5625,6 +6003,27 @@ class MultiROIGUI:
         )
         self.log(msg)
 
+    def _core_texture_metrics_and_code(self, rect):
+        """Run the shared texture contract for a GUI preflight ROI."""
+        if self.first_img8 is None or rect is None:
+            return None, "INVALID_TEXTURE"
+        metrics = roi_texture_metrics(self.first_img8, rect)
+        code = texture_failure_code(
+            metrics,
+            self.min_texture_std.get(),
+            self.min_texture_contrast.get(),
+            self.max_saturated_frac.get(),
+            _core.DEFAULT_TEXTURE_MIN_STRUCTURE_RATIO,
+        )
+        return metrics, code
+
+    def _raise_on_ambiguous_texture(self, rois):
+        """Block a scientific run for an ambiguous near-1D texture only."""
+        for label, rect in rois:
+            _metrics, code = self._core_texture_metrics_and_code(rect)
+            if code == "AMBIGUOUS_TEXTURE":
+                raise RuntimeError(f"AMBIGUOUS_TEXTURE：{label} 的二维纹理不可辨识，请更换或增大 ROI。")
+
     # ---------- 处理前检查 ----------
 
     def validate_before_processing(self):
@@ -5634,6 +6033,16 @@ class MultiROIGUI:
             return self.validate_fullfield_before_processing()
         if not self.roi_groups:
             raise RuntimeError("请先至少添加一组 ROI。")
+        self._raise_on_ambiguous_texture(
+            [
+                (f"{group['name']} ROI1", group.get("roi1"))
+                for group in self.roi_groups
+            ]
+            + [
+                (f"{group['name']} ROI2", group.get("roi2"))
+                for group in self.roi_groups
+            ]
+        )
         if not self.output_folder.get().strip():
             raise RuntimeError("请设置输出文件夹。")
         output_path = Path(self.output_folder.get().strip())
@@ -5728,56 +6137,31 @@ class MultiROIGUI:
                 raise RuntimeError("用户取消：某些 ROI 组 L0 太小。")
 
     def validate_fullfield_before_processing(self):
-        if self.field_roi is None:
-            raise RuntimeError("请先绘制全场分析 ROI。")
-        if not self.output_folder.get().strip():
-            raise RuntimeError("请设置输出文件夹。")
-        output_path = Path(self.output_folder.get().strip())
-        if output_path.exists() and not output_path.is_dir():
-            raise RuntimeError(f"输出路径已存在但不是文件夹：{output_path}")
         start_idx, end_idx = self.get_analysis_indices()
-        if end_idx <= start_idx:
-            raise RuntimeError("分析范围至少应包含两帧（参考帧 + 变形帧）。")
-        field_ref = self.field_roi_reference_frame_1based
-        if field_ref is None:
-            raise RuntimeError("全场 ROI 缺少绘制参考帧记录，请在当前起始/参考帧重画。")
-        if int(field_ref) != start_idx + 1:
-            raise RuntimeError(
-                f"全场 ROI 在第 {field_ref} 帧定义，但当前起始/参考帧为第 {start_idx + 1} 帧，请重画全场 ROI。"
-            )
         if self.first_img8 is None:
             raise RuntimeError("请先加载参考图像。")
-        if not rect_is_inside_image(self.field_roi, self.first_img8.shape):
-            raise RuntimeError("全场 ROI 必须完整位于参考图像内。")
-        validate_image_sequence_dimensions(self.image_paths[start_idx : end_idx + 1])
-        subset = self.get_int_setting(self.dic_subset_size, "子集尺寸")
-        step = self.get_int_setting(self.dic_step, "步长")
-        window = self.get_int_setting(self.dic_strain_window, "应变窗口")
-        search_radius = self.get_int_setting(self.dic_search_radius, "DIC 搜索半径")
-        zncc_min = self.get_float_setting(self.dic_zncc_min, "ZNCC 下限")
-        smooth_sigma = self.get_float_setting(self.dic_smooth_sigma, "高斯平滑 σ")
-        if subset < 9:
-            raise RuntimeError("子集尺寸必须 >= 9。")
-        if subset % 2 == 0:
-            raise RuntimeError("子集尺寸必须为奇数；请使用 21、23 等值。")
-        if step < 1:
-            raise RuntimeError("步长必须 >= 1。")
-        if window < 3:
-            raise RuntimeError("应变窗口必须 >= 3。")
-        if window % 2 == 0:
-            raise RuntimeError("应变窗口必须为奇数；请使用 5、7 等值。")
-        if search_radius < 1:
-            raise RuntimeError("DIC 搜索半径必须 > 0。")
-        if not (0.0 <= zncc_min <= 1.0):
-            raise RuntimeError("ZNCC 下限应在 0 到 1 之间。")
-        if smooth_sigma < 0:
-            raise RuntimeError("高斯平滑 σ 不能为负。")
-        if str(self.dic_solver.get()) not in DIC_SOLVERS:
-            raise RuntimeError("求解器必须是 IC-GN 或 IC-LM。")
-        roi = self.field_roi
-        X, Y = build_poi_grid(roi, subset, step, self.first_img8.shape)
-        if not poi_grid_is_usable(X, Y, min_rows=3, min_cols=3):
-            raise RuntimeError("当前 ROI / 子集 / 步长至少需要 3×3 个可分析的 2D POI，请增大 ROI 或减小步长。")
+        snapshot = {
+            "output_dir": self.output_folder.get().strip(),
+            "image_paths": list(self.image_paths),
+            "start_idx": start_idx,
+            "end_idx": end_idx,
+            "reference_frame_1based": start_idx + 1,
+            "field_roi": self.field_roi,
+            "field_roi_reference_frame_1based": self.field_roi_reference_frame_1based,
+            "min_texture_std": self.get_float_setting(self.min_texture_std, "最小纹理标准差"),
+            "min_texture_contrast": self.get_float_setting(self.min_texture_contrast, "最小纹理对比度"),
+            "max_saturated_frac": self.get_float_setting(self.max_saturated_frac, "最大近黑/近白比例"),
+            "dic_subset_size": self.get_int_setting(self.dic_subset_size, "子集尺寸"),
+            "dic_step": self.get_int_setting(self.dic_step, "步长"),
+            "dic_solver": str(self.dic_solver.get()),
+            "dic_strain_window": self.get_int_setting(self.dic_strain_window, "应变窗口"),
+            "dic_smooth_sigma": self.get_float_setting(self.dic_smooth_sigma, "高斯平滑 σ"),
+            "dic_search_radius": self.get_int_setting(self.dic_search_radius, "DIC 搜索半径"),
+            "dic_zncc_min": self.get_float_setting(self.dic_zncc_min, "ZNCC 下限"),
+            "dic_pyramid_levels": self.get_int_setting(self.dic_pyramid_levels, "金字塔层数"),
+            "dic_pyramid_scale": self.get_float_setting(self.dic_pyramid_scale, "金字塔缩放"),
+        }
+        return validate_fullfield_snapshot(snapshot)
 
     def build_processing_settings(self):
         start_idx, end_idx = self.get_analysis_indices()
@@ -5790,7 +6174,7 @@ class MultiROIGUI:
             hard_corr = 0.55
             soft_corr = 0.35
             enable_adaptive = True
-            use_prev_frame_template = True
+            use_prev_frame_template = False
             template_alpha = 0.70
             max_frame_jump = None
             enable_fb_check = True
@@ -5839,6 +6223,11 @@ class MultiROIGUI:
             tracking_preset = self.tracking_preset.get()
 
         field_roi = tuple(self.field_roi) if self.field_roi is not None else None
+        reference_normalization = None
+        if self.first_raw is not None:
+            reference_raw = self.first_raw if start_idx == 0 else read_gray_image(self.image_paths[start_idx])
+            reference_normalization = compute_reference_normalization(reference_raw)
+        input_identities = ordered_input_manifest(self.image_paths)
         return {
             "output_dir": Path(self.output_folder.get().strip()),
             "image_paths": list(self.image_paths),
@@ -5850,6 +6239,7 @@ class MultiROIGUI:
             "soft_corr": soft_corr,
             "enable_adaptive": enable_adaptive,
             "use_prev_frame_template": use_prev_frame_template,
+            "template_policy": "experimental_follow" if use_prev_frame_template else "fixed_reference",
             "template_alpha": template_alpha,
             "max_frame_jump": max_frame_jump,
             "enable_fb_check": enable_fb_check,
@@ -5867,12 +6257,17 @@ class MultiROIGUI:
             "export_parameters": export_parameters,
             "image_folder": self.image_folder.get(),
             "tracking_preset": tracking_preset,
+            "min_texture_std": float(self.min_texture_std.get()),
+            "min_texture_contrast": float(self.min_texture_contrast.get()),
+            "max_saturated_frac": float(self.max_saturated_frac.get()),
             "analysis_mode": str(self.analysis_mode.get()),
             "field_roi": field_roi,
             "field_roi_reference_frame_1based": self.field_roi_reference_frame_1based,
             "reference_frame_1based": start_idx + 1,
             "reference_filename": Path(self.image_paths[start_idx]).name,
             "image_sequence_fingerprint": image_sequence_fingerprint(self.image_paths),
+            "input_identities": input_identities,
+            "normalization": reference_normalization,
             "dic_subset_size": int(self.dic_subset_size.get()) if is_ff else 21,
             "dic_step": int(self.dic_step.get()) if is_ff else 5,
             "dic_solver": str(self.dic_solver.get()),
@@ -5880,6 +6275,8 @@ class MultiROIGUI:
             "dic_smooth_sigma": float(self.dic_smooth_sigma.get()) if is_ff else 0.0,
             "dic_search_radius": int(self.dic_search_radius.get()) if is_ff else 20,
             "dic_zncc_min": float(self.dic_zncc_min.get()) if is_ff else 0.75,
+            "dic_pyramid_levels": int(self.dic_pyramid_levels.get()) if is_ff else 1,
+            "dic_pyramid_scale": float(self.dic_pyramid_scale.get()) if is_ff else 0.5,
         }
 
     def post_to_ui(self, callback, run_token=None):
@@ -5980,6 +6377,132 @@ class MultiROIGUI:
             self._worker_context.run_token = None
 
     def process_fullfield(self, settings):
+        # The numerical/export engine is Tk-free; this adapter only translates
+        # progress and final state back onto the UI thread.  Keep the legacy
+        # body below as a compatibility fallback for old callers that
+        # explicitly request it.
+        if not settings.get("_legacy_direct_processing", False):
+            # The worker must consume only the frozen settings snapshot and
+            # image files.  In particular, do not call the GUI method here:
+            # it reads Tk variables and is only safe on the main thread.
+            snapshot_keys = (
+                "image_paths",
+                "start_idx",
+                "end_idx",
+                "reference_frame_1based",
+                "field_roi",
+                "field_roi_reference_frame_1based",
+                "dic_subset_size",
+                "dic_step",
+                "dic_solver",
+                "dic_strain_window",
+                "dic_smooth_sigma",
+                "dic_search_radius",
+                "dic_zncc_min",
+            )
+            if (
+                threading.current_thread() is threading.main_thread()
+                and not all(key in settings for key in snapshot_keys)
+            ):
+                # Preserve the old direct-adapter extension point for callers
+                # that supplied an intentionally minimal fake settings object.
+                # Real GUI runs always provide a complete snapshot, and every
+                # worker-thread invocation takes the pure path above.
+                self.validate_fullfield_before_processing()
+            else:
+                validate_fullfield_snapshot(settings)
+            engine_settings = dict(settings)
+            # ``__file__`` may point into a PyInstaller archive.  Resolve the
+            # real auditable copies under ``_MEIPASS/sources`` instead of
+            # passing a path that cannot be hashed or verified.
+            engine_settings["_code_paths"] = [
+                str(path) for path in _core.resolve_code_paths(include_gui=True)
+            ]
+            engine_settings["_gui_adapter"] = True
+            # A pre-v0.2 GUI run has no ownership ledger.  Preserve its
+            # established exact-name migration behaviour once, before the new
+            # transactional engine starts; every v0.2 run is governed solely
+            # by the manifest ledger.  Similar user names (for example
+            # ``frame_0002_u.txt``) are not selected by this allowlist.
+            output_root = Path(settings["output_dir"])
+            legacy_manifest = output_root / "run_manifest.json"
+            if not legacy_manifest.exists():
+                # The pure snapshot preflight above is complete before any
+                # legacy output is migrated.  The new core then owns all
+                # subsequent staging and publication.
+                archive_previous_fullfield_outputs(output_root / "dic")
+            # GUI preflight historically permits low/saturated texture so the
+            # user can inspect a structured invalid-frame result.  Headless
+            # callers remain fail-closed on this contract; this flag is scoped
+            # to the adapter and is recorded in the run configuration.
+            engine_settings["_allow_low_texture_preflight"] = True
+
+            def progress(event):
+                if isinstance(event, dict):
+                    value = 100.0 * float(event.get("fraction", 0.0))
+                    frame = event.get("frame_global_1based")
+                    state = event.get("status", "")
+                else:
+                    value = 100.0 * float(event)
+                    frame = None
+                    state = ""
+                self.post_to_ui(lambda v=value: self.progress.config(value=v))
+                if frame is not None:
+                    self.post_to_ui(lambda f=frame, s=state: self.status_var.set(f"正在处理全场 DIC：第 {f} 帧 {s}"))
+
+            try:
+                result = _core.run_fullfield_sequence(engine_settings, progress_callback=progress)
+            except Exception:
+                # Keep the pre-v0.2 GUI's discoverable failure location while
+                # retaining the canonical root evidence written by the core.
+                failed_root = output_root / "_failed_runs"
+                legacy_failed_root = output_root / "dic" / "_failed_runs"
+                if failed_root.is_dir():
+                    legacy_failed_root.mkdir(parents=True, exist_ok=True)
+                    for failed_dir in sorted((path for path in failed_root.iterdir() if path.is_dir()), key=lambda path: path.name):
+                        target = legacy_failed_root / failed_dir.name
+                        if not target.exists():
+                            try:
+                                shutil.copytree(failed_dir, target)
+                            except OSError:
+                                pass
+                raise
+            if not result.get("scientific_ok", False):
+                raise RuntimeError("全场 DIC 科学有效性门未通过（无有效应变/有限应变）：" + ", ".join(result.get("errors", [])))
+            last_field = result.get("last_field")
+            if last_field is None:
+                raise RuntimeError("全场 DIC 没有可展示的有效结果。")
+            last_image = result.get("last_image")
+            frames = result.get("frames", [])
+            valid_count = sum(1 for item in frames if item.get("status") == "scientific_valid")
+            total_count = len(frames)
+
+            def finish():
+                self.dic_last_field = last_field
+                self.dic_last_image = np.asarray(last_image).copy() if last_image is not None else None
+                self.dic_last_frame_1based = last_field.get("frame_global_1based")
+                self.dic_last_filename = last_field.get("frame_filename")
+                self.dic_last_reference_frame_1based = result.get("manifest", {}).get("reference_frame_1based", settings.get("reference_frame_1based", settings.get("start_idx", 0) + 1))
+                self.dic_last_reference_filename = result.get("manifest", {}).get("reference_filename")
+                self.show_field_viewer(
+                    last_field,
+                    image=self.dic_last_image,
+                    frame_1based=self.dic_last_frame_1based,
+                    filename=self.dic_last_filename,
+                    reference_frame_1based=self.dic_last_reference_frame_1based,
+                    reference_filename=self.dic_last_reference_filename,
+                )
+                self.progress.config(value=100)
+                self.status_var.set(f"处理完成，全场 DIC：{valid_count}/{total_count} 帧科学有效。")
+                self.log(f"全场 DIC manifest 已验证：{result['manifest_path']}")
+                self.show_completion_and_open_output_folder(
+                    f"全场 2D DIC 完成：{valid_count}/{total_count} 个变形帧有效。结果已写入 {settings['output_dir']}",
+                    settings["output_dir"],
+                )
+
+            self.post_to_ui(finish)
+            return result
+
         paths = settings["image_paths"]
         start_idx = settings["start_idx"]
         end_idx = settings["end_idx"]
@@ -5998,7 +6521,8 @@ class MultiROIGUI:
             )
         validate_image_sequence_dimensions(paths[start_idx : end_idx + 1])
         ref_raw = read_gray_image(paths[start_idx])
-        ref8 = normalize_to_uint8(ref_raw)
+        normalization = compute_reference_normalization(ref_raw)
+        ref8 = normalize_with_bounds(ref_raw, normalization)
         if not rect_is_inside_image(roi, ref8.shape):
             raise RuntimeError("全场 ROI 必须完整位于参考图像内。")
         try:
@@ -6074,7 +6598,7 @@ class MultiROIGUI:
                         f"全场 DIC 图像尺寸不一致：参考帧 {ref8.shape[1]}×{ref8.shape[0]} px，"
                         f"{Path(paths[frame_i]).name} 为 {img_raw.shape[1]}×{img_raw.shape[0]} px。"
                     )
-                img8 = normalize_to_uint8(img_raw)
+                img8 = normalize_with_bounds(img_raw, normalization)
                 field = run_2d_dic(ref8, img8, roi, **kwargs)
                 if not fullfield_field_has_finite_strain(field):
                     msg = f"全场 DIC {k}/{n_def}：{Path(paths[frame_i]).name} 无有效/有限应变，已跳过导出。"
@@ -6169,32 +6693,26 @@ class MultiROIGUI:
                 self.post_to_ui(lambda: self.update_workflow_action_states())
             self._worker_context.run_token = None
 
-    def init_group_states(self, first_img8, groups=None):
+    def init_group_states(self, first_img8, groups=None, texture_settings=None):
         if groups is None:
             groups = self.roi_groups
-        states = []
-
-        for group in groups:
-            r1 = tuple(group["roi1"])
-            r2 = tuple(group["roi2"])
-            actual_mode = group["actual_mode"]
-            L0 = length_between(r1, r2, actual_mode)
-
-            state = {
-                "group": group,
-                "last_good_rect1": r1,
-                "last_good_rect2": r2,
-                "template1": extract_patch(first_img8, r1),
-                "template2": extract_patch(first_img8, r2),
-                "last_good_img8": first_img8.copy(),
-                "L0": L0,
-                "last_valid_strain": 0.0,
-                "consecutive_fail_count": 0,
+        if texture_settings is None:
+            texture_settings = {
+                "min_texture_std": self.min_texture_std.get(),
+                "min_texture_contrast": self.min_texture_contrast.get(),
+                "max_saturated_frac": self.max_saturated_frac.get(),
             }
-
-            states.append(state)
-
-        return states
+        return [
+            initialize_extensometer_group_state(
+                first_img8,
+                group,
+                min_texture_std=texture_settings.get("min_texture_std", 8.0),
+                min_texture_contrast=texture_settings.get("min_texture_contrast", 25.0),
+                max_saturated_frac=texture_settings.get("max_saturated_frac", 0.20),
+                min_structure_ratio=_core.DEFAULT_TEXTURE_MIN_STRUCTURE_RATIO,
+            )
+            for group in groups
+        ]
 
     def process_one_group_one_frame(
         self,
@@ -6204,270 +6722,97 @@ class MultiROIGUI:
         filename,
         params,
     ):
-        group = state["group"]
-        group_name = group["name"]
-        actual_mode = group["actual_mode"]
-
-        search_radius_base = params["search_radius_base"]
-        hard_corr = params["hard_corr"]
-        soft_corr = params["soft_corr"]
-        enable_adaptive = params["enable_adaptive"]
-        use_prev_frame_template = params["use_prev_frame_template"]
-        template_alpha = params["template_alpha"]
-        max_frame_jump = params["max_frame_jump"]
-        enable_fb_check = params["enable_fb_check"]
-        fb_tolerance = params["fb_tolerance"]
-        pixel_size_mm = params["pixel_size_mm"]
-
-        last_good_rect1 = state["last_good_rect1"]
-        last_good_rect2 = state["last_good_rect2"]
-        template1 = state["template1"]
-        template2 = state["template2"]
-        last_good_img8 = state["last_good_img8"]
-        L0 = state["L0"]
-        last_valid_strain = state["last_valid_strain"]
-        consecutive_fail_count = state["consecutive_fail_count"]
-
-        candidate_rect1 = None
-        candidate_rect2 = None
-        score1 = 1.0
-        score2 = 1.0
-        fb_err1 = np.nan
-        fb_err2 = np.nan
-        fb_score1 = np.nan
-        fb_score2 = np.nan
-
-        if frame_idx == 0:
-            used_rect1 = last_good_rect1
-            used_rect2 = last_good_rect2
-            template_ok1 = has_nonzero_variance(template1)
-            template_ok2 = has_nonzero_variance(template2)
-            if template_ok1 and template_ok2:
-                accepted = True
-                accept_mode = "initial"
-                reason = "initial frame"
-                L = L0
-                strain = 0.0
-                true_strain = 0.0
-            else:
-                accepted = False
-                accept_mode = "rejected"
-                score1 = 1.0 if template_ok1 else -1.0
-                score2 = 1.0 if template_ok2 else -1.0
-                reason = "zero-variance template; frame rejected"
-                L = np.nan
-                strain = np.nan
-                true_strain = np.nan
-                state["consecutive_fail_count"] = consecutive_fail_count + 1
-        else:
-            radius_factor = min(5, 1 + consecutive_fail_count)
-            search_radius = search_radius_base * radius_factor
-
-            candidate_rect1, score1 = match_template_candidate(
-                img8,
-                last_good_rect1,
-                template1,
-                search_radius=search_radius,
-            )
-            candidate_rect2, score2 = match_template_candidate(
-                img8,
-                last_good_rect2,
-                template2,
-                search_radius=search_radius,
-            )
-
-            candidate_L = length_between(candidate_rect1, candidate_rect2, actual_mode)
-            if L0 <= 0 or not np.isfinite(L0):
-                candidate_strain = np.nan
-            else:
-                candidate_strain = (candidate_L - L0) / L0
-
-            ok_jump = True
-            if np.isfinite(candidate_strain) and np.isfinite(last_valid_strain):
-                jump_value = abs(candidate_strain - last_valid_strain)
-                if max_frame_jump is not None:
-                    ok_jump = jump_value <= max_frame_jump
-            else:
-                ok_jump = False
-                jump_value = float("inf")
-
-            ok_hard_corr = (score1 >= hard_corr) and (score2 >= hard_corr)
-            ok_soft_corr = (score1 >= soft_corr) and (score2 >= soft_corr)
-
-            ok_fb = True
-            if enable_fb_check:
-                fb_err1, fb_score1 = forward_backward_error(
-                    last_good_img8,
-                    img8,
-                    last_good_rect1,
-                    candidate_rect1,
-                    search_radius=search_radius,
-                )
-                fb_err2, fb_score2 = forward_backward_error(
-                    last_good_img8,
-                    img8,
-                    last_good_rect2,
-                    candidate_rect2,
-                    search_radius=search_radius,
-                )
-                ok_fb = (fb_err1 <= fb_tolerance) and (fb_err2 <= fb_tolerance)
-
-            if ok_hard_corr and ok_jump:
-                accepted = True
-                accept_mode = "hard"
-                reason = "hard corr + continuous strain"
-            elif enable_adaptive and ok_soft_corr and ok_jump and ok_fb:
-                accepted = True
-                accept_mode = "adaptive"
-                reason = "soft corr + continuous strain + FB check"
-            else:
-                accepted = False
-                accept_mode = "rejected"
-
-                fail_reasons = []
-                if not ok_hard_corr:
-                    fail_reasons.append(
-                        f"hard corr fail: ROI1 {score1:.3f}, ROI2 {score2:.3f} < {hard_corr:.3f}"
-                    )
-                if enable_adaptive and not ok_soft_corr:
-                    fail_reasons.append(
-                        f"soft corr fail: ROI1 {score1:.3f}, ROI2 {score2:.3f} < {soft_corr:.3f}"
-                    )
-                if not ok_jump:
-                    if max_frame_jump is not None:
-                        fail_reasons.append(
-                            f"strain jump {jump_value:.4f} > {max_frame_jump:.4f}"
-                        )
-                    else:
-                        fail_reasons.append("strain jump check disabled but failed unexpectedly")
-                if enable_fb_check and not ok_fb:
-                    fail_reasons.append(
-                        f"FB fail: ROI1 {fb_err1:.2f}px, ROI2 {fb_err2:.2f}px > {fb_tolerance:.2f}px"
-                    )
-
-                reason = "; ".join(fail_reasons) if fail_reasons else "rejected"
-
-            if accepted:
-                used_rect1 = candidate_rect1
-                used_rect2 = candidate_rect2
-
-                L = candidate_L
-                strain = candidate_strain
-                # 统一使用 log1p(engineering) 计算 true strain，比 log(L/L0) 在 strain 很小时数值更稳定
-                true_strain = math.log1p(strain) if np.isfinite(strain) and (1.0 + strain) > 0 else np.nan
-
-                state["last_good_rect1"] = used_rect1
-                state["last_good_rect2"] = used_rect2
-                state["last_valid_strain"] = strain
-                state["consecutive_fail_count"] = 0
-
-                if use_prev_frame_template:
-                    state["template1"] = update_template_from_rect(img8, used_rect1, template1, template_alpha)
-                    state["template2"] = update_template_from_rect(img8, used_rect2, template2, template_alpha)
-
-                state["last_good_img8"] = img8.copy()
-            else:
-                used_rect1 = last_good_rect1
-                used_rect2 = last_good_rect2
-
-                L = np.nan
-                strain = np.nan
-                true_strain = np.nan
-
-                state["consecutive_fail_count"] = consecutive_fail_count + 1
-
-        c1x, c1y = rect_center(used_rect1)
-        c2x, c2y = rect_center(used_rect2)
-
-        row = {
-            "frame": frame_idx,
-            "filename": filename,
-            "group": group_name,
-            "role": normalize_roi_role(group.get("role", "none")),
-            "selected_mode": group["selected_mode"],
-            "actual_mode": actual_mode,
-            "accepted": accepted,
-            "accept_mode": accept_mode,
-            "reason": reason,
-            "consecutive_fail_count": state["consecutive_fail_count"],
-            "corr_score_roi1": score1,
-            "corr_score_roi2": score2,
-            "fb_error_roi1_px": fb_err1,
-            "fb_error_roi2_px": fb_err2,
-            "fb_score_roi1": fb_score1,
-            "fb_score_roi2": fb_score2,
-            "L0_px": L0,
-            "used_roi1_x_px": used_rect1[0],
-            "used_roi1_y_px": used_rect1[1],
-            "used_roi1_w_px": used_rect1[2],
-            "used_roi1_h_px": used_rect1[3],
-            "used_roi1_center_x_px": c1x,
-            "used_roi1_center_y_px": c1y,
-            "used_roi2_x_px": used_rect2[0],
-            "used_roi2_y_px": used_rect2[1],
-            "used_roi2_w_px": used_rect2[2],
-            "used_roi2_h_px": used_rect2[3],
-            "used_roi2_center_x_px": c2x,
-            "used_roi2_center_y_px": c2y,
-            "length_px": L,
-            "engineering_strain": strain,
-            "true_strain": true_strain,
-            "last_valid_engineering_strain": state["last_valid_strain"],
-        }
-
-        if candidate_rect1 is not None:
-            cc1x, cc1y = rect_center(candidate_rect1)
-            row["candidate_roi1_center_x_px"] = cc1x
-            row["candidate_roi1_center_y_px"] = cc1y
-        else:
-            row["candidate_roi1_center_x_px"] = np.nan
-            row["candidate_roi1_center_y_px"] = np.nan
-
-        if candidate_rect2 is not None:
-            cc2x, cc2y = rect_center(candidate_rect2)
-            row["candidate_roi2_center_x_px"] = cc2x
-            row["candidate_roi2_center_y_px"] = cc2y
-        else:
-            row["candidate_roi2_center_x_px"] = np.nan
-            row["candidate_roi2_center_y_px"] = np.nan
-
-        if pixel_size_mm is not None and np.isfinite(L):
-            row["length_mm"] = L * pixel_size_mm
-            row["elongation_mm"] = (L - L0) * pixel_size_mm
-
-        overlay_info = {
-            "used_rect1": used_rect1,
-            "used_rect2": used_rect2,
-            "candidate_rect1": candidate_rect1,
-            "candidate_rect2": candidate_rect2,
-            "strain": strain,
-            "last_valid_strain": state["last_valid_strain"],
-            "score1": score1,
-            "score2": score2,
-            "accepted": accepted,
-            "accept_mode": accept_mode,
-            "reason": reason,
-            "fb_err1": fb_err1,
-            "fb_err2": fb_err2,
-        }
-
-        return row, overlay_info
+        # Canonical numerical state machine lives in the Tk-free core.
+        return track_extensometer_group_frame(
+            state,
+            img8,
+            frame_idx,
+            filename,
+            params,
+        )
 
     def process_images(self, settings=None):
         if settings is None:
             settings = self.build_processing_settings()
 
-        output_dir = settings["output_dir"]
-        output_dir.mkdir(parents=True, exist_ok=True)
-        core_dir = output_dir / "core"
-        qc_dir = output_dir / "qc"
-        optional_dir = output_dir / "optional"
+        if not settings.get("_legacy_direct_processing", False):
+            image_paths = settings.get("image_paths", [])
+            start_idx = int(settings.get("start_idx", 0))
+            end_idx = int(settings.get("end_idx", len(image_paths) - 1))
+            validate_image_sequence_dimensions(image_paths[start_idx:end_idx + 1])
+            engine_settings = dict(settings)
+            # Use the same source resolver as the full-field adapter; this is
+            # required for frozen GUI runs where both module ``__file__``
+            # values can be archive-style/non-filesystem paths.
+            engine_settings["_code_paths"] = [
+                str(path) for path in _core.resolve_code_paths(include_gui=True)
+            ]
+            engine_settings["_gui_adapter"] = True
+
+            def progress(event):
+                if isinstance(event, dict):
+                    value = 100.0 * float(event.get("fraction", 0.0))
+                    frame = event.get("frame_global_1based")
+                else:
+                    value = 100.0 * float(event)
+                    frame = None
+                self.post_to_ui(lambda v=value: self.progress.config(value=v))
+                if frame is not None:
+                    self.post_to_ui(lambda f=frame: self.status_var.set(f"正在批量追踪：第 {f} 帧"))
+
+            result = _core.run_extensometer_sequence(engine_settings, progress_callback=progress)
+            if not result.get("scientific_ok", False):
+                raise RuntimeError("虚拟引伸计科学有效性门未通过：" + ", ".join(result.get("errors", [])))
+            df = result.get("dataframe")
+            summary = result.get("summary")
+            output_dir = Path(settings["output_dir"])
+            if df is None or summary is None:
+                raise RuntimeError("引擎未返回可展示的结果表。")
+            written_paths = [Path(path) for path in result.get("outputs", [])]
+            qc_level = summary.get("overall", {}).get("qc_level", "Unknown")
+            n_rejected = summary.get("overall", {}).get("rejected_frames", 0)
+            n_adaptive = summary.get("overall", {}).get("adaptive_accepted_frames", 0)
+            path_log = "输出文件：\n" + "\n".join(str(path) for path in written_paths)
+            done_msg = (
+                "处理完成。\n"
+                f"核心结果已保存到: {output_dir / 'core'}\n"
+                f"QC 状态：{qc_level}\n"
+                f"拒绝帧数：{n_rejected}\n"
+                f"自适应接受帧数：{n_adaptive}\n"
+                f"manifest 已验证：{result['manifest_path']}"
+            )
+            if settings.get("export_origin_txt") and (output_dir / "core" / "strain_mean_groups.txt").is_file():
+                done_msg += "\n平均应变文件: core\\strain_mean_groups.txt\n平均应变列也已写入: core\\strain_all_groups.txt"
+            self.post_to_ui(lambda: self.progress.config(value=100))
+            self.post_to_ui(lambda: self.status_var.set(f"处理完成，QC 状态：{qc_level}"))
+            self.post_to_ui(lambda s=summary: self.update_qc_overview(s))
+            self.post_to_ui(lambda m=done_msg + "\n" + path_log: self.log(m))
+            self.post_to_ui(lambda m=done_msg: self.show_completion_and_open_output_folder(m, output_dir))
+            try:
+                if not df.empty and settings.get("roi_groups"):
+                    self.post_to_ui(lambda: self.show_results_viewer(df, settings["roi_groups"]))
+            except Exception:
+                self.post_to_ui(lambda: self.log("结果预览窗口初始化失败（不影响已验证文件）"))
+            return result
 
         start_idx = settings["start_idx"]
         end_idx = settings["end_idx"]
         image_paths = settings["image_paths"]
         image_paths_run = image_paths[start_idx:end_idx + 1]
         roi_groups = settings["roi_groups"]
+
+        # Validate and freeze the reference normalization before creating any
+        # output directory.  A non-finite input therefore cannot leave even a
+        # staged/current result behind.
+        validate_image_sequence_dimensions(image_paths_run)
+        first_raw = read_gray_image(image_paths_run[0])
+        normalization = compute_reference_normalization(first_raw)
+
+        output_dir = settings["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        core_dir = output_dir / "core"
+        qc_dir = output_dir / "qc"
+        optional_dir = output_dir / "optional"
 
         search_radius_base = settings["search_radius_base"]
         hard_corr = settings["hard_corr"]
@@ -6506,10 +6851,17 @@ class MultiROIGUI:
             "pixel_size_mm": pixel_size_mm,
         }
 
-        first_raw = read_gray_image(image_paths_run[0])
-        first_img8 = normalize_to_uint8(first_raw)
+        first_img8 = normalize_with_bounds(first_raw, normalization)
 
-        states = self.init_group_states(first_img8, roi_groups)
+        states = self.init_group_states(
+            first_img8,
+            roi_groups,
+            texture_settings={
+                "min_texture_std": settings.get("min_texture_std", 8.0),
+                "min_texture_contrast": settings.get("min_texture_contrast", 25.0),
+                "max_saturated_frac": settings.get("max_saturated_frac", 0.20),
+            },
+        )
 
         overlay_dirs = {}
         if export_overlays:
@@ -6533,7 +6885,7 @@ class MultiROIGUI:
 
         for i, path in enumerate(image_paths_run):
             raw = read_gray_image(path)
-            img8 = normalize_to_uint8(raw)
+            img8 = normalize_with_bounds(raw, normalization)
             fname = os.path.basename(path)
 
             for state in states:
@@ -6731,6 +7083,7 @@ class MultiROIGUI:
                 f.write(f"soft_corr = {soft_corr}\n")
                 f.write(f"enable_adaptive = {enable_adaptive}\n")
                 f.write(f"use_prev_frame_template = {use_prev_frame_template}\n")
+                f.write(f"template_policy = {'experimental_follow' if use_prev_frame_template else 'fixed_reference'}\n")
                 f.write(f"template_alpha = {template_alpha}\n")
                 f.write(f"max_frame_strain_jump = {max_frame_jump}\n")
                 f.write(f"enable_fb_check = {enable_fb_check}\n")
@@ -7310,6 +7663,87 @@ class MultiROIGUI:
 
     def run(self):
         self.root.mainloop()
+
+
+# ---------------------------------------------------------------------------
+# GUI compatibility exports
+# ---------------------------------------------------------------------------
+# Keep these assignments at module scope so the established GUI import path
+# remains valid while every numerical/field-export entry point resolves to the
+# Tk-free implementation.  ``MultiROIGUI`` continues to own widgets, state,
+# callbacks, and viewer lifecycle only.
+CoreError = _core.CoreError
+resolve_code_paths = _core.resolve_code_paths
+resolve_source_paths = _core.resolve_source_paths
+generate_synthetic_speckle = _core.generate_synthetic_speckle
+warp_image_translation = _core.warp_image_translation
+warp_image_deformation_gradient = _core.warp_image_deformation_gradient
+green_lagrange_from_F = _core.green_lagrange_from_F
+read_gray_image = _core.read_gray_image
+normalize_to_uint8 = _core.normalize_to_uint8
+integer_cc_guess = _core.integer_cc_guess
+match_template_candidate = _core.match_template_candidate
+match_template_candidate_diagnostic = _core.match_template_candidate_diagnostic
+extract_patch_subpixel = _core.extract_patch_subpixel
+update_template_from_rect = _core.update_template_from_rect
+forward_backward_error = _core.forward_backward_error
+initialize_extensometer_group_state = _core.initialize_extensometer_group_state
+track_extensometer_group_frame = _core.track_extensometer_group_frame
+field_quality_summary = _core.field_quality_summary
+DEFAULT_PEAK_MARGIN_MIN = _core.DEFAULT_PEAK_MARGIN_MIN
+DEFAULT_PEAK_RATIO_MIN = _core.DEFAULT_PEAK_RATIO_MIN
+DEFAULT_MAX_HESSIAN_CONDITION_NUMBER = _core.DEFAULT_MAX_HESSIAN_CONDITION_NUMBER
+DEFAULT_MIN_CORRELATION_VALID_FRACTION = _core.DEFAULT_MIN_CORRELATION_VALID_FRACTION
+DEFAULT_MIN_STRAIN_VALID_FRACTION = _core.DEFAULT_MIN_STRAIN_VALID_FRACTION
+build_poi_grid = _core.build_poi_grid
+poi_grid_is_usable = _core.poi_grid_is_usable
+rect_is_inside_image = _core.rect_is_inside_image
+validate_image_sequence_dimensions = _core.validate_image_sequence_dimensions
+fullfield_field_has_finite_strain = _core.fullfield_field_has_finite_strain
+roi_texture_metrics = _core.roi_texture_metrics
+texture_is_ok = _core.texture_is_ok
+texture_failure_code = _core.texture_failure_code
+require_texture = _core.require_texture
+TEXTURE_METRICS_VERSION = _core.TEXTURE_METRICS_VERSION
+TEXTURE_DISCRIMINATOR_VERSION = _core.TEXTURE_DISCRIMINATOR_VERSION
+TEXTURE_PREFLIGHT_VERSION = _core.TEXTURE_PREFLIGHT_VERSION
+compute_reference_normalization = _core.compute_reference_normalization
+compute_reference_normalization_bounds = _core.compute_reference_normalization_bounds
+normalize_with_bounds = _core.normalize_with_bounds
+normalize_sequence_frames = _core.normalize_sequence_frames
+sha256_file = _core.sha256_file
+file_identity = _core.file_identity
+ordered_input_manifest = _core.ordered_input_manifest
+canonicalize_json = _core.canonicalize_json
+canonical_json_bytes = _core.canonical_json_bytes
+canonical_json_hash = _core.canonical_json_hash
+collect_environment = _core.collect_environment
+code_fingerprint = _core.code_fingerprint
+refine_subset_icgn = _core.refine_subset_icgn
+refine_subset_iclm = _core.refine_subset_iclm
+compute_strain_fields = _core.compute_strain_fields
+run_2d_dic = _core.run_2d_dic
+run_2d_dic_sequence = _core.run_2d_dic_sequence
+dic_field_to_dataframe = _core.dic_field_to_dataframe
+write_dic_field_txt = _core.write_dic_field_txt
+write_dic_field_parameters = _core.write_dic_field_parameters
+overlay_dic_field_on_image = _core.overlay_dic_field_on_image
+export_dic_field_outputs = _core.export_dic_field_outputs
+build_core_strain_table = _core.build_core_strain_table
+write_origin_txt = _core.write_origin_txt
+build_mean_strain_table = _core.build_mean_strain_table
+build_poisson_ratio_table = _core.build_poisson_ratio_table
+build_all_groups_strain_table = _core.build_all_groups_strain_table
+write_all_groups_origin_txt = _core.write_all_groups_origin_txt
+write_mean_groups_origin_txt = _core.write_mean_groups_origin_txt
+write_poisson_ratio_txt = _core.write_poisson_ratio_txt
+build_origin_project_tables = _core.build_origin_project_tables
+build_qc_summary = _core.build_qc_summary
+write_qc_summary = _core.write_qc_summary
+plot_engineering_strain = _core.plot_engineering_strain
+plot_all_groups_engineering_strain = _core.plot_all_groups_engineering_strain
+plot_poisson_ratio = _core.plot_poisson_ratio
+plot_correlation_scores = _core.plot_correlation_scores
 
 
 def main():

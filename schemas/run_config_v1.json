@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ezdic.org/schema/run_config_v1.json",
+  "title": "ezDIC strict headless run configuration v1",
+  "description": "A GUI-independent fixed-reference configuration. Unknown fields are rejected; arbitrary caller annotations belong only under metadata.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "analysis_mode", "start_frame_1based", "end_frame_1based", "reference_frame_1based", "output_dir"],
+  "properties": {
+    "schema_version": {"const": 1, "type": "integer"},
+    "analysis_mode": {"enum": ["extensometer", "fullfield"]},
+    "image_paths": {"type": "array", "minItems": 2, "items": {"type": "string", "minLength": 1}},
+    "image_folder": {"type": "string", "minLength": 1},
+    "start_frame_1based": {"type": "integer", "minimum": 1},
+    "end_frame_1based": {"type": "integer", "minimum": 1},
+    "reference_frame_1based": {"type": "integer", "minimum": 1},
+    "output_dir": {"type": "string", "minLength": 1},
+    "roi_groups": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/roiGroup"}},
+    "field_roi": {"$ref": "#/$defs/rect"},
+    "field_roi_reference_frame_1based": {"type": "integer", "minimum": 1},
+    "tracking": {"$ref": "#/$defs/tracking"},
+    "texture": {"$ref": "#/$defs/texture"},
+    "quality": {"$ref": "#/$defs/quality"},
+    "solver": {"$ref": "#/$defs/solver"},
+    "pyramid": {"$ref": "#/$defs/pyramid"},
+    "normalization": {"$ref": "#/$defs/normalization"},
+    "export": {"$ref": "#/$defs/export"},
+    "transaction": {"$ref": "#/$defs/transaction"},
+    "metadata": {"type": "object", "description": "Caller-defined annotations; values still must be finite JSON."}
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {"required": ["image_paths"], "not": {"required": ["image_folder"]}},
+        {"required": ["image_folder"], "not": {"required": ["image_paths"]}}
+      ]
+    },
+    {
+      "if": {"properties": {"analysis_mode": {"const": "extensometer"}}},
+      "then": {
+        "required": ["roi_groups"],
+        "not": {"anyOf": [{"required": ["field_roi"]}, {"required": ["solver"]}, {"required": ["pyramid"]}]},
+        "properties": {
+          "quality": {"not": {"anyOf": [{"required": ["zncc_min"]}, {"required": ["max_condition_number"]}, {"required": ["max_residual_rms"]}, {"required": ["reject_nonconverged"]}, {"required": ["min_correlation_valid_fraction"]}]}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"analysis_mode": {"const": "fullfield"}}},
+      "then": {
+        "required": ["field_roi"],
+        "not": {"anyOf": [{"required": ["roi_groups"]}, {"required": ["tracking"]}]},
+        "properties": {
+          "quality": {"not": {"anyOf": [{"required": ["enable_fb_check"]}, {"required": ["fb_tolerance_px"]}]}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"normalization": {"properties": {"policy": {"const": "fixed_bounds"}}}}},
+      "then": {"properties": {"normalization": {"required": ["bounds"]}}}
+    },
+    {
+      "if": {"properties": {"analysis_mode": {"const": "fullfield"}}},
+      "then": {"properties": {"export": {"properties": {"write_parameters": {"const": true}}}}}
+    }
+  ],
+  "$defs": {
+    "number": {"type": "number", "description": "The CLI rejects NaN, Infinity and numeric strings."},
+    "rect": {
+      "type": "array",
+      "prefixItems": [
+        {"$ref": "#/$defs/nonNegativeInteger"},
+        {"$ref": "#/$defs/nonNegativeInteger"},
+        {"$ref": "#/$defs/positiveInteger"},
+        {"$ref": "#/$defs/positiveInteger"}
+      ],
+      "minItems": 4,
+      "maxItems": 4,
+      "items": false
+    },
+    "nonNegativeNumber": {"$ref": "#/$defs/number", "minimum": 0},
+    "positiveNumber": {"$ref": "#/$defs/number", "exclusiveMinimum": 0},
+    "nonNegativeInteger": {"type": "integer", "minimum": 0},
+    "positiveInteger": {"type": "integer", "minimum": 1},
+    "roiGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roi1", "roi2"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "roi1": {"$ref": "#/$defs/rect"},
+        "roi2": {"$ref": "#/$defs/rect"},
+        "strain_mode": {"enum": ["auto", "x", "y", "distance"]},
+        "role": {"enum": ["none", "axial", "transverse"]}
+      }
+    },
+    "tracking": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "search_radius_px": {"type": "integer", "minimum": 1},
+        "hard_corr": {"$ref": "#/$defs/fraction"},
+        "soft_corr": {"$ref": "#/$defs/fraction"},
+        "enable_adaptive": {"type": "boolean"},
+        "use_prev_frame_template": {"type": "boolean"},
+        "template_policy": {"enum": ["fixed_reference", "follow_deformed_experimental"]},
+        "template_alpha": {"$ref": "#/$defs/fraction"},
+        "max_frame_jump_px": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/positiveNumber"}]},
+        "pixel_size_mm": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/positiveNumber"}]}
+      }
+    },
+    "texture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_texture_std": {"$ref": "#/$defs/nonNegativeNumber"},
+        "min_texture_contrast": {"$ref": "#/$defs/nonNegativeNumber"},
+        "max_saturated_frac": {"$ref": "#/$defs/fraction"},
+        "min_structure_ratio": {"$ref": "#/$defs/fraction"}
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "zncc_min": {"$ref": "#/$defs/fraction"},
+        "peak_margin_min": {"$ref": "#/$defs/nonNegativeNumber"},
+        "best_to_second_peak_ratio_min": {"$ref": "#/$defs/positiveNumber", "minimum": 1},
+        "min_correlation_valid_fraction": {"$ref": "#/$defs/fraction"},
+        "min_strain_valid_fraction": {"$ref": "#/$defs/fraction"},
+        "min_valid_frames": {"type": "integer", "minimum": 1},
+        "min_valid_frame_ratio": {"$ref": "#/$defs/fraction"},
+        "max_condition_number": {"$ref": "#/$defs/positiveNumber"},
+        "max_residual_rms": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/positiveNumber"}], "description": "Normalized grayscale residual RMS; dimensionless. null disables this threshold."},
+        "reject_nonconverged": {"type": "boolean"},
+        "enable_fb_check": {"type": "boolean"},
+        "fb_tolerance_px": {"$ref": "#/$defs/nonNegativeNumber"}
+      }
+    },
+    "solver": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {"enum": ["IC-GN", "IC-LM"]},
+        "subset_size_px": {"type": "integer", "minimum": 9},
+        "step_px": {"type": "integer", "minimum": 1},
+        "strain_window_px": {"type": "integer", "minimum": 3},
+        "smooth_sigma_poi": {"$ref": "#/$defs/nonNegativeNumber", "description": "POI-grid index units."},
+        "search_radius_px": {"type": "integer", "minimum": 1},
+        "max_iterations": {"type": "integer", "minimum": 1},
+        "tolerance": {"$ref": "#/$defs/positiveNumber"}
+      }
+    },
+    "pyramid": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"levels": {"type": "integer", "minimum": 1, "maximum": 8}, "scale": {"$ref": "#/$defs/fraction", "exclusiveMinimum": 0}}
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy": {"enum": ["reference_percentile", "fixed_bounds"]},
+        "lower_percentile": {"$ref": "#/$defs/fraction100"},
+        "upper_percentile": {"$ref": "#/$defs/fraction100"},
+        "bounds": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "object", "additionalProperties": false, "required": ["lo", "hi"], "properties": {"lo": {"$ref": "#/$defs/number"}, "hi": {"$ref": "#/$defs/number"}}}
+          ]
+        },
+        "clip": {"const": true, "type": "boolean"}
+      }
+    },
+    "export": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "write_manifest": {"const": true, "type": "boolean"},
+        "write_qc": {"type": "boolean"},
+        "write_full_csv": {"type": "boolean"},
+        "write_origin_txt": {"type": "boolean"},
+        "write_origin_opju": {"type": "boolean"},
+        "write_engineering_png": {"type": "boolean"},
+        "write_publication_figures": {"type": "boolean"},
+        "write_corr_plot": {"type": "boolean"},
+        "write_overlays": {"type": "boolean"},
+        "write_parameters": {"type": "boolean"},
+        "origin_opju_required": {"type": "boolean"}
+      }
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"const": true, "type": "boolean"},
+        "archive_previous": {"const": true, "type": "boolean"},
+        "retain_failed_staging": {"const": true, "type": "boolean"}
+      }
+    },
+    "fraction": {"$ref": "#/$defs/number", "minimum": 0, "maximum": 1},
+    "fraction100": {"$ref": "#/$defs/number", "minimum": 0, "maximum": 100}
+  }
+}

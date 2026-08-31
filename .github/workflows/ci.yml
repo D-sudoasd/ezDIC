@@ -1,0 +1,175 @@
+name: ezDIC Windows CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned build and test dependencies
+        shell: pwsh
+        run: python -m pip install --requirement requirements-build.txt
+
+      - name: Compile all source entrypoints and modules
+        shell: pwsh
+        run: >-
+          python -B -m py_compile
+          dic_virtual_extensometer_gui_v7_multi_roi_range.py
+          ezdic_core.py ezdic_cli.py ezdic_benchmark.py
+          ezdic_frozen_entrypoint.py ezdic_cli_entrypoint.py
+          benchmarks/run_benchmark.py benchmarks/synthetic_cases.py
+
+      - name: Run full pytest without repository cache output
+        shell: pwsh
+        run: python -B -m pytest -q -p no:cacheprovider
+
+      - name: Run locked synthetic benchmark outside the repository
+        shell: pwsh
+        run: |
+          $benchmarkRoot = Join-Path $env:RUNNER_TEMP "ezdic-benchmark"
+          python -B ezdic_cli.py benchmark --cases benchmarks/cases_v1.json --output $benchmarkRoot
+          $reportPath = Join-Path $benchmarkRoot "benchmark_report.json"
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+          if ([string]$report.report_version -ne "ezdic-benchmark-report-v5") { throw "Benchmark report_version is not v5." }
+          if ([string]$report.cases_version -ne "ezdic-benchmark-cases-v3") { throw "Benchmark cases_version is not locked v5." }
+          if ([string]$report.locked_cases_hash -ne "3dbe0dae3fdf8f30ec32c9fd8f036f0a53b4a705380626e7860773f62f31cb20") { throw "Benchmark locked case hash mismatch." }
+          if ($report.overall_pass -ne $true -or [int]$report.exit_code -ne 0) { throw "Locked benchmark did not pass." }
+          foreach ($gate in @("code_provenance", "csv_exists", "csv_rows", "near_1d_preflight_pass", "numeric_baseline_pass", "quality_ranking_pass")) {
+            if ($report.gate_summary.PSObject.Properties[$gate].Value -ne $true) { throw "Benchmark gate failed: $gate" }
+            if ($report.gates.PSObject.Properties[$gate].Value -ne $true) { throw "Benchmark gate failed: gates.$gate" }
+          }
+          if ($report.gate_summary.PSObject.Properties["quality_threshold_evaluated"].Value -ne $false -or $null -ne $report.gate_summary.PSObject.Properties["quality_threshold_pass"].Value) { throw "Benchmark quality threshold must remain unevaluated." }
+          if ($report.gates.PSObject.Properties["quality_threshold_evaluated"].Value -ne $false -or $null -ne $report.gates.PSObject.Properties["quality_threshold_pass"].Value) { throw "Benchmark quality threshold must remain unevaluated." }
+          if ((Get-Content -LiteralPath $reportPath -Raw) -match '"(?:status|threshold_status)"\s*:\s*"CALIBRATED"') { throw "Benchmark must not claim calibrated quality." }
+          $expectedIds = @("small_translation", "large_translation", "small_affine_strain", "near_1d_periodic")
+          $ids = @($report.cases | ForEach-Object { [string]$_.case_id })
+          if (($ids -join "|") -ne ($expectedIds -join "|")) { throw "Benchmark cases are missing or reordered." }
+          $byId = @{}; foreach ($case in @($report.cases)) { $byId[[string]$case.case_id] = $case }
+          foreach ($id in @("small_translation", "large_translation", "small_affine_strain")) {
+            if ($byId[$id].benchmark_pass -ne $true) { throw "Benchmark case failed: $id" }
+          }
+          $smallMetrics = $byId["small_translation"].metrics
+          $largeMetrics = $byId["large_translation"].metrics
+          $affineMetrics = $byId["small_affine_strain"].metrics
+          if ([math]::Abs([double]$smallMetrics.rmse_px - 0.0199390744704955) -gt 1e-6 -or [math]::Abs([double]$smallMetrics.p95_error_px - 0.0292620272322426) -gt 1e-6 -or [math]::Abs([double]$smallMetrics.max_error_px - 0.0325828355049195) -gt 1e-6) { throw "Small clean metrics differ from the locked v5 baseline." }
+          if ([math]::Abs([double]$largeMetrics.rmse_px - 0.0115297238459114) -gt 1e-6 -or [math]::Abs([double]$largeMetrics.p95_error_px - 0.0239808947702811) -gt 1e-6 -or [math]::Abs([double]$largeMetrics.max_error_px - 0.0269901966835571) -gt 1e-6) { throw "Large clean metrics differ from the locked v5 baseline." }
+          if ([math]::Abs([double]$affineMetrics.rmse_px - 0.00363440394904515) -gt 1e-6 -or [math]::Abs([double]$affineMetrics.p95_error_px - 0.00651264913461063) -gt 1e-6 -or [math]::Abs([double]$affineMetrics.max_error_px - 0.0103736747535708) -gt 1e-6 -or [math]::Abs([double]$affineMetrics.strain_component_abs_error_max - 0.000273878639940106) -gt 1e-6 -or [math]::Abs([double]$affineMetrics.strain_consistency_abs_error_max - 0.000270907694748) -gt 1e-6) { throw "Affine clean metrics differ from the locked v5 baseline." }
+          if ([int]$smallMetrics.false_accept_count -ne 0 -or [int]$smallMetrics.quality_false_accept_count -ne 0 -or [int]$largeMetrics.false_accept_count -ne 0 -or [int]$largeMetrics.quality_false_accept_count -ne 0 -or [int]$affineMetrics.false_accept_count -ne 0 -or [int]$affineMetrics.quality_false_accept_count -ne 0) { throw "Clean baseline contains unexpected false accepts." }
+          $near = $byId["near_1d_periodic"]
+          if ([string]$near.status -ne "REJECTED" -or [string]$near.failure_code -ne "AMBIGUOUS_TEXTURE" -or [string]$near.outcome -ne "AMBIGUOUS_TEXTURE" -or [int]$near.solver_calls -ne 0 -or [int]$near.successful_export_artifacts -ne 0 -or [string]$near.texture_preflight.code -ne "AMBIGUOUS_TEXTURE") { throw "Near-1D typed rejection/zero-artifact gate failed." }
+          $quality = $report.quality_error
+          if ([string]$quality.version -ne "quality_score_v1" -or [int]$quality.point_count -ne 565 -or [int]$quality.good_label_count -ne 563 -or [int]$quality.bad_label_count -ne 2 -or [int]$quality.finite_error_label_count -ne 565 -or [int]$quality.ranking_point_count -ne 567 -or [int]$quality.ranking_good_label_count -ne 563 -or [int]$quality.ranking_bad_label_count -ne 4 -or [int]$quality.ranking_rejected_bad_count -ne 2 -or [int]$quality.corruption_row_count -ne 4 -or [double]$quality.error_tolerance_px -ne 0.25 -or [double]$quality.roc_auc -lt 0.90 -or [math]::Abs([double]$report.quality_auc - [double]$quality.roc_auc) -gt 1e-12 -or [int]$quality.false_accept_count -ne 2 -or [double]$quality.false_accept_rate -ne 1.0 -or [int]$quality.ranking_false_accept_count -ne 2 -or [double]$quality.ranking_false_accept_rate -ne 0.5 -or $quality.quality_threshold_evaluated -ne $false -or $null -ne $quality.quality_threshold_pass -or [string]$quality.threshold_status -ne "NOT_CALIBRATED") { throw "Quality-score v1 ranking/threshold gate failed." }
+          if ([string]$report.quality_score.version -ne "quality_score_v1" -or [string]$report.quality_score.ratio_direction -ne "best_over_second" -or [string]$report.quality_score.threshold_status -ne "NOT_CALIBRATED" -or $report.quality_score.quality_threshold_evaluated -ne $false -or $null -ne $report.quality_score.quality_threshold_pass -or [string]$report.quality_contract.illustrative_quality_threshold.status -ne "NOT_CALIBRATED") { throw "Quality-score calibration status is invalid." }
+          $csvPath = Join-Path $benchmarkRoot "benchmark_report.csv"
+          if (!(Test-Path -LiteralPath $csvPath -PathType Leaf) -or (Get-Item -LiteralPath $csvPath).Length -le 0) { throw "Benchmark CSV is missing or empty." }
+          $csvHash = (Get-FileHash -LiteralPath $csvPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($csvHash -ne ([string]$report.artifacts.benchmark_report_csv_sha256).ToLowerInvariant()) { throw "Benchmark CSV hash mismatch." }
+          if ($csvHash -ne "39d4e52f35cd3161a1e877b6edcd5187568bf275c6c8d552422605b73b4c0bfb") { throw "Benchmark CSV is not the canonical v5 artifact." }
+          $hashPattern = '^[0-9a-fA-F]{64}$'
+          $codeFiles = @{
+            "benchmark_source_sha256" = "ezdic_benchmark.py"
+            "benchmark_runner_source_sha256" = "benchmarks/run_benchmark.py"
+            "synthetic_cases_source_sha256" = "benchmarks/synthetic_cases.py"
+            "cases_json_sha256" = "benchmarks/cases_v1.json"
+            "core_source_sha256" = "ezdic_core.py"
+            "cli_source_sha256" = "ezdic_cli.py"
+          }
+          foreach ($field in $codeFiles.Keys) {
+            $reported = [string]$report.code.PSObject.Properties[$field].Value
+            if ($reported -notmatch $hashPattern) { throw "Benchmark code hash missing: $field" }
+            $observed = (Get-FileHash -LiteralPath $codeFiles[$field] -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($reported.ToLowerInvariant() -ne $observed) { throw "Benchmark code hash mismatch: $field" }
+          }
+
+      - name: Build onedir GUI and CLI bundle
+        shell: pwsh
+        run: python -B -m PyInstaller .\ezDIC.spec --clean --noconfirm
+
+      - name: Run real frozen GUI smoke and packaged CLI help
+        shell: pwsh
+        run: |
+          $bundle = Join-Path $PWD "dist\ezDIC_Windows_x64"
+          $gui = Join-Path $bundle "ezDIC.exe"
+          $cli = Join-Path $bundle "ezDIC-cli.exe"
+          $guiSource = Join-Path $bundle "_internal\sources\dic_virtual_extensometer_gui_v7_multi_roi_range.py"
+          if (!(Test-Path -LiteralPath $gui -PathType Leaf)) { throw "Missing frozen GUI: $gui" }
+          if (!(Test-Path -LiteralPath $cli -PathType Leaf)) { throw "Missing frozen CLI: $cli" }
+          if (!(Test-Path -LiteralPath $guiSource -PathType Leaf)) { throw "Missing frozen GUI provenance source: $guiSource" }
+          $guiHash = (Get-FileHash -LiteralPath $guiSource -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sourceGuiHash = (Get-FileHash -LiteralPath "dic_virtual_extensometer_gui_v7_multi_roi_range.py" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($guiHash -notmatch '^[0-9a-fA-F]{64}$' -or $guiHash -ne $sourceGuiHash) { throw "Frozen GUI provenance hash mismatch." }
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "ezdic-frozen-smoke"
+          New-Item -ItemType Directory -Path $smokeRoot -Force | Out-Null
+          $env:EZDIC_FROZEN_SMOKE_MARKER = Join-Path $smokeRoot "smoke.json"
+          $process = Start-Process -FilePath $gui -ArgumentList @("--smoke-test") -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Frozen GUI smoke failed with exit code $($process.ExitCode)" }
+          $marker = Get-Content -LiteralPath $env:EZDIC_FROZEN_SMOKE_MARKER -Raw | ConvertFrom-Json
+          if ($marker.smoke -ne "passed") { throw "Frozen smoke marker did not report passed." }
+          $markerSources = @{
+            "core_sha256" = "ezdic_core.py"
+            "cli_sha256" = "ezdic_cli.py"
+            "benchmark_sha256" = "ezdic_benchmark.py"
+            "schema_sha256" = "schemas/run_config_v1.json"
+          }
+          foreach ($field in $markerSources.Keys) {
+            $reported = [string]$marker.PSObject.Properties[$field].Value
+            if ($reported -notmatch '^[0-9a-fA-F]{64}$') { throw "Frozen smoke hash missing: $field" }
+            $observed = (Get-FileHash -LiteralPath $markerSources[$field] -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($reported.ToLowerInvariant() -ne $observed) { throw "Frozen smoke hash mismatch: $field" }
+          }
+          Remove-Item Env:EZDIC_FROZEN_SMOKE_MARKER
+          & $cli --help
+          if ($LASTEXITCODE -ne 0) { throw "Packaged CLI help failed with exit code $LASTEXITCODE" }
+          $frozenBenchmarkRoot = Join-Path $env:RUNNER_TEMP "ezdic-frozen-benchmark"
+          & $cli benchmark --output $frozenBenchmarkRoot
+          if ($LASTEXITCODE -ne 0) { throw "Packaged CLI benchmark failed with exit code $LASTEXITCODE" }
+          $frozenReportPath = Join-Path $frozenBenchmarkRoot "benchmark_report.json"
+          $frozenReport = Get-Content -LiteralPath $frozenReportPath -Raw | ConvertFrom-Json
+          if ([string]$frozenReport.report_version -ne "ezdic-benchmark-report-v5" -or [string]$frozenReport.cases_version -ne "ezdic-benchmark-cases-v3") { throw "Packaged CLI benchmark is not report v5." }
+          if ($frozenReport.overall_pass -ne $true -or [int]$frozenReport.exit_code -ne 0) { throw "Packaged CLI benchmark did not pass." }
+          if ([string]$frozenReport.locked_cases_hash -ne "3dbe0dae3fdf8f30ec32c9fd8f036f0a53b4a705380626e7860773f62f31cb20") { throw "Packaged CLI locked case hash mismatch." }
+          foreach ($gate in @("code_provenance", "csv_exists", "csv_rows", "near_1d_preflight_pass", "numeric_baseline_pass", "quality_ranking_pass")) {
+            if ($frozenReport.gate_summary.PSObject.Properties[$gate].Value -ne $true) { throw "Packaged CLI benchmark gate failed: $gate" }
+            if ($frozenReport.gates.PSObject.Properties[$gate].Value -ne $true) { throw "Packaged CLI benchmark gate failed: gates.$gate" }
+          }
+          if ($frozenReport.gate_summary.PSObject.Properties["quality_threshold_evaluated"].Value -ne $false -or $null -ne $frozenReport.gate_summary.PSObject.Properties["quality_threshold_pass"].Value) { throw "Packaged CLI quality threshold must remain unevaluated." }
+          if ($frozenReport.gates.PSObject.Properties["quality_threshold_evaluated"].Value -ne $false -or $null -ne $frozenReport.gates.PSObject.Properties["quality_threshold_pass"].Value) { throw "Packaged CLI quality threshold must remain unevaluated." }
+          if ((Get-Content -LiteralPath $frozenReportPath -Raw) -match '"(?:status|threshold_status)"\s*:\s*"CALIBRATED"') { throw "Packaged CLI benchmark must not claim calibrated quality." }
+          if ([string]$frozenReport.quality_contract.illustrative_quality_threshold.status -ne "NOT_CALIBRATED" -or [string]$frozenReport.quality_score.threshold_status -ne "NOT_CALIBRATED" -or $frozenReport.quality_score.quality_threshold_evaluated -ne $false -or $null -ne $frozenReport.quality_score.quality_threshold_pass) { throw "Packaged CLI quality calibration status is invalid." }
+          $frozenIds = @($frozenReport.cases | ForEach-Object { [string]$_.case_id })
+          if (($frozenIds -join "|") -ne "small_translation|large_translation|small_affine_strain|near_1d_periodic") { throw "Packaged CLI benchmark cases are missing or reordered." }
+          $frozenNear = @($frozenReport.cases | Where-Object { $_.case_id -eq "near_1d_periodic" })[0]
+          if ($null -eq $frozenNear -or [string]$frozenNear.status -ne "REJECTED" -or [string]$frozenNear.failure_code -ne "AMBIGUOUS_TEXTURE" -or [string]$frozenNear.outcome -ne "AMBIGUOUS_TEXTURE" -or [int]$frozenNear.solver_calls -ne 0 -or [int]$frozenNear.successful_export_artifacts -ne 0 -or [string]$frozenNear.texture_preflight.code -ne "AMBIGUOUS_TEXTURE") { throw "Packaged CLI near-1D gate failed." }
+          $frozenQuality = $frozenReport.quality_error
+          if ([string]$frozenQuality.version -ne "quality_score_v1" -or [int]$frozenQuality.point_count -ne 565 -or [int]$frozenQuality.good_label_count -ne 563 -or [int]$frozenQuality.bad_label_count -ne 2 -or [int]$frozenQuality.finite_error_label_count -ne 565 -or [int]$frozenQuality.ranking_point_count -ne 567 -or [int]$frozenQuality.ranking_good_label_count -ne 563 -or [int]$frozenQuality.ranking_bad_label_count -ne 4 -or [int]$frozenQuality.ranking_rejected_bad_count -ne 2 -or [int]$frozenQuality.corruption_row_count -ne 4 -or [double]$frozenQuality.error_tolerance_px -ne 0.25 -or [double]$frozenQuality.roc_auc -lt 0.90 -or [math]::Abs([double]$frozenReport.quality_auc - [double]$frozenQuality.roc_auc) -gt 1e-12 -or [int]$frozenQuality.false_accept_count -ne 2 -or [double]$frozenQuality.false_accept_rate -ne 1.0 -or [int]$frozenQuality.ranking_false_accept_count -ne 2 -or [double]$frozenQuality.ranking_false_accept_rate -ne 0.5 -or $frozenQuality.quality_threshold_evaluated -ne $false -or $null -ne $frozenQuality.quality_threshold_pass -or [string]$frozenQuality.threshold_status -ne "NOT_CALIBRATED") { throw "Packaged CLI quality-score gate failed." }
+          $frozenCsv = Join-Path $frozenBenchmarkRoot "benchmark_report.csv"
+          if (!(Test-Path -LiteralPath $frozenCsv -PathType Leaf) -or (Get-Item -LiteralPath $frozenCsv).Length -le 0) { throw "Packaged CLI benchmark CSV is missing or empty." }
+          $frozenCsvHash = (Get-FileHash -LiteralPath $frozenCsv -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($frozenCsvHash -ne ([string]$frozenReport.artifacts.benchmark_report_csv_sha256).ToLowerInvariant()) { throw "Packaged CLI benchmark CSV hash mismatch." }
+          if ($frozenCsvHash -ne "39d4e52f35cd3161a1e877b6edcd5187568bf275c6c8d552422605b73b4c0bfb") { throw "Packaged CLI benchmark CSV is not the canonical v5 artifact." }
+          $frozenCodeFiles = @{
+            "benchmark_source_sha256" = "ezdic_benchmark.py"
+            "benchmark_runner_source_sha256" = "benchmarks/run_benchmark.py"
+            "synthetic_cases_source_sha256" = "benchmarks/synthetic_cases.py"
+            "cases_json_sha256" = "benchmarks/cases_v1.json"
+            "core_source_sha256" = "ezdic_core.py"
+            "cli_source_sha256" = "ezdic_cli.py"
+          }
+          foreach ($field in $frozenCodeFiles.Keys) {
+            $reported = [string]$frozenReport.code.PSObject.Properties[$field].Value
+            if ($reported -notmatch '^[0-9a-fA-F]{64}$') { throw "Packaged CLI benchmark code hash missing: $field" }
+            $observed = (Get-FileHash -LiteralPath $frozenCodeFiles[$field] -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($reported.ToLowerInvariant() -ne $observed) { throw "Packaged CLI benchmark code hash mismatch: $field" }
+          }

@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import tkinter.font as tkfont
 
@@ -60,7 +61,7 @@ def reset_gui_app(app):
     app.tracking_preset.set("标准")
     app.preset_status_var.set("当前追踪模式：标准")
     app.enable_adaptive.set(True)
-    app.use_prev_frame_template.set(True)
+    app.use_prev_frame_template.set(False)
     app.template_alpha.set(0.70)
     app.max_frame_strain_jump.set("0.01")
     app.enable_fb_check.set(True)
@@ -1244,11 +1245,9 @@ def test_background_processing_finishes_even_if_ui_queue_is_not_drained(gui_app,
 
     image_dir = tmp_path / "images"
     image_dir.mkdir()
-    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    speckle = ezdic.generate_synthetic_speckle(100, 160, seed=71)
     for idx in range(3):
-        arr = np.full((100, 160), 30, dtype=np.uint8)
-        arr[30:60, 20 + idx:50 + idx] = patch
-        arr[30:60, 90 + idx:120 + idx] = patch
+        arr = ezdic.warp_image_translation(speckle, float(idx), 0.0).astype(np.uint8)
         ok, data = cv2.imencode(".png", arr)
         assert ok
         data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
@@ -1281,11 +1280,9 @@ def test_publication_figure_export_writes_high_res_and_vector_outputs(gui_app, t
 
     image_dir = tmp_path / "images"
     image_dir.mkdir()
-    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    speckle = ezdic.generate_synthetic_speckle(100, 160, seed=72)
     for idx in range(3):
-        arr = np.full((100, 160), 30, dtype=np.uint8)
-        arr[30:60, 20 + idx:50 + idx] = patch
-        arr[30:60, 90 + idx:120 + idx] = patch
+        arr = ezdic.warp_image_translation(speckle, float(idx), 0.0).astype(np.uint8)
         ok, data = cv2.imencode(".png", arr)
         assert ok
         data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
@@ -1319,11 +1316,9 @@ def test_origin_opju_failure_does_not_cancel_existing_exports(gui_app, tmp_path,
 
     image_dir = tmp_path / "images"
     image_dir.mkdir()
-    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    speckle = ezdic.generate_synthetic_speckle(100, 160, seed=73)
     for idx in range(3):
-        arr = np.full((100, 160), 30, dtype=np.uint8)
-        arr[30:60, 20 + idx:50 + idx] = patch
-        arr[30:60, 90 + idx:120 + idx] = patch
+        arr = ezdic.warp_image_translation(speckle, float(idx), 0.0).astype(np.uint8)
         ok, data = cv2.imencode(".png", arr)
         assert ok
         data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
@@ -1375,11 +1370,9 @@ def test_processing_completion_mentions_mean_export_and_opens_output_root(gui_ap
 
     image_dir = tmp_path / "images"
     image_dir.mkdir()
-    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    speckle = ezdic.generate_synthetic_speckle(100, 160, seed=74)
     for idx in range(3):
-        arr = np.full((100, 160), 30, dtype=np.uint8)
-        arr[30:60, 20 + idx:50 + idx] = patch
-        arr[30:60, 90 + idx:120 + idx] = patch
+        arr = ezdic.warp_image_translation(speckle, float(idx), 0.0).astype(np.uint8)
         ok, data = cv2.imencode(".png", arr)
         assert ok
         data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
@@ -1422,11 +1415,9 @@ def test_completed_analysis_populates_qc_overview_and_curve_preview(gui_app, tmp
 
     image_dir = tmp_path / "images_qc_preview"
     image_dir.mkdir()
-    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    speckle = ezdic.generate_synthetic_speckle(100, 160, seed=75)
     for idx in range(3):
-        arr = np.full((100, 160), 30, dtype=np.uint8)
-        arr[30:60, 20 + idx:50 + idx] = patch
-        arr[30:60, 90 + idx:120 + idx] = patch
+        arr = ezdic.warp_image_translation(speckle, float(idx), 0.0).astype(np.uint8)
         ok, data = cv2.imencode(".png", arr)
         assert ok
         data.tofile(str(image_dir / f"frame_{idx:03d}.png"))
@@ -1865,6 +1856,46 @@ def test_fullfield_previous_run_archive_moves_only_ezdic_generated_files(tmp_pat
         assert (archive / name).exists()
 
 
+def test_fullfield_previous_run_archive_rolls_back_on_core_move_failure(tmp_path, monkeypatch):
+    dic_dir = tmp_path / "dic"
+    dic_dir.mkdir()
+    generated = [dic_dir / "frame_0002.txt", dic_dir / "frame_0002.csv"]
+    original_bytes = {}
+    for path in generated:
+        original_bytes[path] = b"previous run\x00\xff"
+        path.write_bytes(original_bytes[path])
+
+    real_move = ezdic._core._move_exact
+    archive_moves = 0
+    rollback_events = []
+
+    def fail_second_archive_move(source, destination, *, root=None):
+        nonlocal archive_moves
+        source_path = Path(source)
+        destination_path = Path(destination)
+        is_archive_move = (
+            source_path.parent == dic_dir
+            and destination_path.parent.parent == dic_dir / "_previous_runs"
+        )
+        if is_archive_move:
+            archive_moves += 1
+            if archive_moves == 2:
+                raise OSError("forced archive move #2 failure")
+        elif source_path.parent.parent == dic_dir / "_previous_runs" and destination_path.parent == dic_dir:
+            rollback_events.append((source_path, destination_path))
+        return real_move(source, destination, root=root)
+
+    monkeypatch.setattr(ezdic._core, "_move_exact", fail_second_archive_move)
+    with pytest.raises(RuntimeError, match="归档"):
+        ezdic.archive_previous_fullfield_outputs(dic_dir)
+
+    assert archive_moves == 2
+    assert rollback_events
+    assert all(path.read_bytes() == original_bytes[path] for path in generated)
+    assert not list((dic_dir / "_previous_runs").rglob("frame_0002.txt"))
+    assert not list((dic_dir / "_previous_runs").rglob("frame_0002.csv"))
+
+
 def test_fullfield_fatal_frame_is_transactionally_archived_without_root_partial_files(
     gui_app, tmp_path, monkeypatch
 ):
@@ -2000,6 +2031,222 @@ def test_fullfield_preflight_blocks_narrow_roi_without_three_by_three_grid(gui_a
         app.validate_fullfield_before_processing()
 
 
+def _fullfield_snapshot(image_paths, output_dir, **overrides):
+    settings = {
+        "image_paths": [str(path) for path in image_paths],
+        "start_idx": 0,
+        "end_idx": len(image_paths) - 1,
+        "reference_frame_1based": 1,
+        "field_roi": (12, 12, 40, 40),
+        "field_roi_reference_frame_1based": 1,
+        "output_dir": str(output_dir),
+        "min_texture_std": 8.0,
+        "min_texture_contrast": 25.0,
+        "max_saturated_frac": 0.20,
+        "dic_subset_size": 15,
+        "dic_step": 8,
+        "dic_solver": ezdic.DIC_SOLVER_ICGN,
+        "dic_strain_window": 5,
+        "dic_smooth_sigma": 0.0,
+        "dic_search_radius": 12,
+        "dic_zncc_min": 0.75,
+        "dic_pyramid_levels": 1,
+        "dic_pyramid_scale": 0.5,
+    }
+    settings.update(overrides)
+    return settings
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires a real Windows junction")
+def test_fullfield_legacy_migration_rejects_real_dic_junction_before_core(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "out_junction"
+    outside = tmp_path / "outside"
+    output_root.mkdir()
+    outside.mkdir()
+    outside_file = outside / "frame_0002_u.png"
+    outside_bytes = b"outside legacy bytes\x00\xff"
+    outside_file.write_bytes(outside_bytes)
+
+    junction = output_root / "dic"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    image_dir = tmp_path / "images_junction"
+    image_dir.mkdir()
+    reference = ezdic.generate_synthetic_speckle(64, 64, seed=93)
+    image_paths = []
+    for index, shift in enumerate((0.0, 0.7)):
+        path = image_dir / f"frame_{index + 1:03d}.png"
+        image = ezdic.warp_image_translation(reference, shift, 0.0).astype(np.uint8)
+        ok, encoded = cv2.imencode(".png", image)
+        assert ok
+        encoded.tofile(str(path))
+        image_paths.append(path)
+
+    core_calls = []
+    monkeypatch.setattr(
+        ezdic._core,
+        "run_fullfield_sequence",
+        lambda *_args, **_kwargs: core_calls.append(True),
+    )
+    app = object.__new__(ezdic.MultiROIGUI)
+    try:
+        with pytest.raises(RuntimeError, match="REPARSE_PATH_REJECTED|junction|symlink"):
+            app.process_fullfield(_fullfield_snapshot(image_paths, output_root))
+    finally:
+        # Remove the junction itself, never its outside target.
+        subprocess.run(["cmd", "/c", "rmdir", str(junction)], check=False)
+
+    assert core_calls == []
+    assert outside_file.read_bytes() == outside_bytes
+    assert outside_file.resolve() == outside_file
+    assert not (outside / "_previous_runs").exists()
+    assert not (output_root / "_previous_runs").exists()
+
+
+def test_fullfield_worker_uses_snapshot_without_tk_reads(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    image_dir = tmp_path / "images_worker_snapshot"
+    image_dir.mkdir()
+    reference = ezdic.generate_synthetic_speckle(64, 64, seed=91)
+    image_paths = []
+    for index, shift in enumerate((0.0, 0.7)):
+        path = image_dir / f"frame_{index + 1:03d}.png"
+        image = ezdic.warp_image_translation(reference, shift, 0.0).astype(np.uint8)
+        ok, encoded = cv2.imencode(".png", image)
+        assert ok
+        encoded.tofile(str(path))
+        image_paths.append(path)
+
+    output_dir = tmp_path / "out_worker_snapshot"
+    settings = _fullfield_snapshot(image_paths, output_dir)
+    callbacks = []
+    archive_events = []
+    engine_events = []
+    app.post_to_ui = lambda callback, **_kwargs: callbacks.append(callback)
+    app.validate_fullfield_before_processing = lambda *args, **kwargs: pytest.fail(
+        "worker must not call the Tk-bound fullfield validator"
+    )
+
+    class _ForbiddenTkVariable:
+        def get(self):
+            raise AssertionError("worker attempted to read a Tk variable")
+
+    # If the worker accidentally consults GUI state, this replaces the values
+    # it would be most likely to read after the main-thread snapshot exists.
+    forbidden_names = (
+        "output_folder",
+        "dic_subset_size",
+        "dic_step",
+        "dic_solver",
+        "dic_strain_window",
+        "dic_smooth_sigma",
+        "dic_search_radius",
+        "dic_zncc_min",
+        "dic_pyramid_levels",
+        "dic_pyramid_scale",
+    )
+    original_variables = {name: getattr(app, name) for name in forbidden_names}
+    for name in forbidden_names:
+        setattr(app, name, _ForbiddenTkVariable())
+
+    def fake_archive(path):
+        archive_events.append(Path(path))
+
+    field = {
+        "frame_global_1based": 2,
+        "frame_filename": image_paths[1].name,
+        "valid": np.ones(9, dtype=bool),
+        "Exx": np.zeros(9),
+        "Eyy": np.zeros(9),
+        "Exy": np.zeros(9),
+    }
+
+    def fake_engine(engine_settings, progress_callback=None):
+        engine_events.append(engine_settings)
+        return {
+            "scientific_ok": True,
+            "manifest_path": str(output_dir / "run_manifest.json"),
+            "last_field": field,
+            "last_image": np.zeros((64, 64), dtype=np.uint8),
+            "frames": [{"status": "scientific_valid"}],
+            "manifest": {"reference_frame_1based": 1, "reference_filename": image_paths[0].name},
+        }
+
+    monkeypatch.setattr(ezdic, "archive_previous_fullfield_outputs", fake_archive)
+    monkeypatch.setattr(ezdic._core, "run_fullfield_sequence", fake_engine)
+    app.show_field_viewer = lambda *_args, **_kwargs: None
+    app.show_completion_and_open_output_folder = lambda *_args, **_kwargs: None
+    app.log = lambda *_args, **_kwargs: None
+
+    errors = []
+
+    def run_worker():
+        try:
+            app.process_fullfield_thread(settings)
+        except Exception as exc:  # pragma: no cover - assertion below reports it
+            errors.append(exc)
+
+    try:
+        worker = threading.Thread(target=run_worker, name="ezdic-fullfield-test-worker")
+        worker.start()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert errors == []
+        assert len(engine_events) == 1
+        assert len(archive_events) == 1
+        assert callbacks
+    finally:
+        for name, variable in original_variables.items():
+            setattr(app, name, variable)
+
+
+def test_fullfield_invalid_snapshot_fails_before_archive_and_core(tmp_path, monkeypatch):
+    image_dir = tmp_path / "images_invalid_snapshot"
+    image_dir.mkdir()
+    reference = ezdic.generate_synthetic_speckle(64, 64, seed=92)
+    image_paths = []
+    for index in range(2):
+        path = image_dir / f"frame_{index + 1:03d}.png"
+        image = ezdic.warp_image_translation(reference, float(index), 0.0).astype(np.uint8)
+        ok, encoded = cv2.imencode(".png", image)
+        assert ok
+        encoded.tofile(str(path))
+        image_paths.append(path)
+
+    archive_events = []
+    engine_events = []
+    monkeypatch.setattr(
+        ezdic,
+        "archive_previous_fullfield_outputs",
+        lambda path: archive_events.append(Path(path)),
+    )
+    monkeypatch.setattr(
+        ezdic._core,
+        "run_fullfield_sequence",
+        lambda *_args, **_kwargs: engine_events.append(True),
+    )
+    app = object.__new__(ezdic.MultiROIGUI)
+    settings = _fullfield_snapshot(
+        image_paths,
+        tmp_path / "out_invalid_snapshot",
+        dic_subset_size=7,
+    )
+
+    with pytest.raises(RuntimeError, match="子集尺寸"):
+        app.process_fullfield(settings)
+    assert archive_events == []
+    assert engine_events == []
+
+
 def test_fullfield_settings_ignore_invalid_hidden_1d_parameters(gui_app, tmp_path, monkeypatch):
     _root, app = gui_app
     reset_gui_app(app)
@@ -2100,11 +2347,9 @@ def test_overlay_write_failure_is_reported(gui_app, tmp_path, monkeypatch):
     monkeypatch.setattr(ezdic.messagebox, "askyesno", lambda *args, **kwargs: True)
     folder = tmp_path / "images_write_failure"
     folder.mkdir()
-    patch = np.arange(900, dtype=np.uint16).reshape(30, 30).astype(np.uint8)
+    speckle = ezdic.generate_synthetic_speckle(100, 160, seed=76)
     for idx in range(2):
-        arr = np.full((100, 160), 30, dtype=np.uint8)
-        arr[30:60, 20 + idx:50 + idx] = patch
-        arr[30:60, 90 + idx:120 + idx] = patch
+        arr = ezdic.warp_image_translation(speckle, float(idx), 0.0).astype(np.uint8)
         ok, data = cv2.imencode(".png", arr)
         assert ok
         data.tofile(str(folder / f"frame_{idx:03d}.png"))

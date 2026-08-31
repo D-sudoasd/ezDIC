@@ -132,7 +132,7 @@ def test_dic_table_and_colormap_use_plot_presets(tmp_path):
         reference, deformed, roi, subset_size=21, step=12, solver=ezdic.DIC_SOLVER_ICGN
     )
     table = ezdic.dic_field_to_dataframe(field)
-    assert list(table.columns) == [
+    legacy_columns = [
         "x",
         "y",
         "u",
@@ -146,6 +146,8 @@ def test_dic_table_and_colormap_use_plot_presets(tmp_path):
         "eyy",
         "exy",
     ]
+    assert list(table.columns[: len(legacy_columns)]) == legacy_columns
+    assert {"u_raw", "v_raw", "residual_rms", "strain_valid"}.issubset(table.columns)
     txt_path = tmp_path / "field.txt"
     ezdic.write_dic_field_txt(field, txt_path)
     text = txt_path.read_text(encoding="utf-8")
@@ -258,19 +260,23 @@ def test_previous_output_archive_rolls_back_on_second_move_failure(tmp_path, mon
     dic_dir = tmp_path / "dic"
     dic_dir.mkdir()
     generated = [dic_dir / "frame_0002.txt", dic_dir / "frame_0002.csv"]
+    original_bytes = {}
     for path in generated:
-        path.write_text("previous run\n", encoding="utf-8")
+        original_bytes[path] = b"previous run\x00\xff"
+        path.write_bytes(original_bytes[path])
     similar_user_file = dic_dir / "frame_0002_parameters.png"
     similar_user_file.write_text("keep user file\n", encoding="utf-8")
 
-    real_move = ezdic.shutil.move
+    real_move = ezdic._core._move_exact
     archive_moves = 0
+    archive_failures = 0
     events = []
 
-    def fail_second_archive_move(source, destination):
+    def fail_second_archive_move(source, destination, *, root=None):
+        nonlocal archive_moves
+        nonlocal archive_failures
         source_path = Path(source)
         destination_path = Path(destination)
-        nonlocal archive_moves
         is_archive_move = (
             source_path.parent == dic_dir
             and destination_path.parent.parent == dic_dir / "_previous_runs"
@@ -279,20 +285,25 @@ def test_previous_output_archive_rolls_back_on_second_move_failure(tmp_path, mon
             archive_moves += 1
             events.append((source_path, destination_path))
             if archive_moves == 2:
+                archive_failures += 1
                 raise OSError("forced archive move #2 failure")
         elif source_path.parent.parent == dic_dir / "_previous_runs" and destination_path.parent == dic_dir:
             events.append((source_path, destination_path))
-        return real_move(source, destination)
+        return real_move(source, destination, root=root)
 
-    monkeypatch.setattr(ezdic.shutil, "move", fail_second_archive_move)
+    monkeypatch.setattr(ezdic._core, "_move_exact", fail_second_archive_move)
     with pytest.raises(RuntimeError, match="归档"):
         ezdic.archive_previous_fullfield_outputs(dic_dir)
 
     assert archive_moves == 2
+    assert archive_failures == 1
     assert any(event[0] == dic_dir / "frame_0002.csv" for event in events)
     assert any(event[1] == dic_dir / "frame_0002.csv" for event in events)
-    assert all(path.exists() for path in generated)
+    assert all(path.exists() and path.read_bytes() == original_bytes[path] for path in generated)
     assert similar_user_file.exists()
+    assert sorted(path.name for path in dic_dir.iterdir() if path.is_file()) == sorted(
+        [path.name for path in generated] + [similar_user_file.name]
+    )
     assert not list((dic_dir / "_previous_runs").rglob("frame_0002.txt"))
     assert not list((dic_dir / "_previous_runs").rglob("frame_0002.csv"))
 

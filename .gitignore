@@ -17,6 +17,7 @@ release/
 virtual_extensometer_output*/
 ezdic_export_check/
 strain_results_*.csv
+.omo/
 
 # OS/editor noise
 .DS_Store
