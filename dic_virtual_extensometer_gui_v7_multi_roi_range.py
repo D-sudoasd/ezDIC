@@ -2860,6 +2860,7 @@ class MultiROIGUI:
         self.field_viewer_context_var = tk.StringVar(value="")
         self._viewer_kind = "extensometer"
         self._committed_analysis_mode = ANALYSIS_MODE_EXTENSOMETER
+        self._canvas_shows_field_overlay = False
 
         # 图像缩放状态
         self.zoom_factor = 1.0          # 相对于原始图像的缩放倍率
@@ -5120,6 +5121,7 @@ class MultiROIGUI:
         self.first_raw = read_gray_image(path)
         self.first_img8 = normalize_to_uint8(self.first_raw)
         self.current_fullres_img8 = self.first_img8.copy()
+        self._canvas_shows_field_overlay = False
 
         self.display_img = None
         self.display_scale = 1.0
@@ -5390,6 +5392,7 @@ class MultiROIGUI:
 
         disp = cv2.resize(self.current_fullres_img8, (target_w, target_h), interpolation=cv2.INTER_AREA)
         rgb = cv2.cvtColor(disp, cv2.COLOR_GRAY2RGB)
+        self._canvas_shows_field_overlay = False
 
         self.display_img = rgb
         self.display_scale = self.zoom_factor
@@ -5402,6 +5405,7 @@ class MultiROIGUI:
         if self.current_fullres_img8 is None:
             return
         self.auto_fit_enabled = True
+        self._canvas_shows_field_overlay = False
         self._rescale_display_to_current_size()
         self._update_preview_scale_label()
         self._update_zoom_label()
@@ -5415,6 +5419,7 @@ class MultiROIGUI:
 
         h, w = self.current_fullres_img8.shape[:2]
         rgb = cv2.cvtColor(self.current_fullres_img8, cv2.COLOR_GRAY2RGB)
+        self._canvas_shows_field_overlay = False
         self.display_img = rgb
         self.display_scale = 1.0
         self.show_image()
@@ -5503,8 +5508,10 @@ class MultiROIGUI:
     def _restore_sequence_preview(self):
         """Rebuild the image canvas from the loaded frame, dropping a stale overlay."""
         if self.current_fullres_img8 is None:
+            self._canvas_shows_field_overlay = False
             return
         self.auto_fit_enabled = True
+        self._canvas_shows_field_overlay = False
         self.display_img = None
         if hasattr(self, "_rescale_display_to_current_size"):
             self._rescale_display_to_current_size()
@@ -5560,6 +5567,7 @@ class MultiROIGUI:
         disp = cv2.resize(self.current_fullres_img8, (new_disp_w, new_disp_h), interpolation=cv2.INTER_AREA)
         self.display_img = cv2.cvtColor(disp, cv2.COLOR_GRAY2RGB)
         self.display_scale = self.zoom_factor
+        self._canvas_shows_field_overlay = False
 
         self.show_image()
         self._update_preview_scale_label()
@@ -5623,11 +5631,7 @@ class MultiROIGUI:
             return
         if getattr(self, "is_processing", False) or getattr(self, "_completion_pending", False):
             return
-        if (
-            getattr(self, "_viewer_kind", "extensometer") == "fullfield"
-            and getattr(self, "dic_last_field", None) is not None
-            and not getattr(self, "auto_fit_enabled", True)
-        ):
+        if getattr(self, "_canvas_shows_field_overlay", False):
             self.status_var.set("当前画布是全场结果叠加图。请先显示预览/参考帧再画 ROI。")
             self.log("已忽略在结果叠加图上的 ROI 绘制；请先恢复预览帧。")
             return
@@ -5653,6 +5657,13 @@ class MultiROIGUI:
 
     def on_mouse_up(self, event):
         if self.first_img8 is None or self.drag_start is None:
+            return
+        if getattr(self, "_canvas_shows_field_overlay", False):
+            if self.temp_rect_id is not None:
+                self.canvas.delete(self.temp_rect_id)
+                self.temp_rect_id = None
+            self.drag_start = None
+            self.status_var.set("当前画布是全场结果叠加图。请先显示预览/参考帧再画 ROI。")
             return
 
         x0, y0 = self.drag_start
@@ -7321,6 +7332,7 @@ class MultiROIGUI:
             )
             self.auto_fit_enabled = False
             self.display_img = overlay
+            self._canvas_shows_field_overlay = True
             _height, width = overlay.shape[:2]
             orig_h, orig_w = np.asarray(self.dic_last_image).shape[:2]
             self.display_scale = width / max(orig_w, 1)
@@ -7731,6 +7743,7 @@ class MultiROIGUI:
         if hasattr(self, "field_viewer_context_var"):
             self.field_viewer_context_var.set("")
         self._viewer_kind = "extensometer"
+        self._restore_sequence_preview()
 
         # 恢复占位提示
         if keep_placeholder:

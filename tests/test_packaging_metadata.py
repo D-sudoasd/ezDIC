@@ -103,6 +103,7 @@ def reset_gui_app(app):
         app.dic_last_reference_frame_1based = None
         app.dic_last_reference_filename = None
         app.field_viewer_context_var.set("")
+        app._canvas_shows_field_overlay = False
     app.image_paths = []
     app.loaded_image_folder = None
     app.loaded_image_sequence_fingerprint = None
@@ -1726,9 +1727,125 @@ def test_fullfield_overlay_does_not_accept_roi_drawing(gui_app):
     class _Event:
         x = 10
         y = 10
+    assert app._canvas_shows_field_overlay is True
     app.on_mouse_down(_Event())
     assert app.drag_start is None
     assert "叠加图" in app.status_var.get()
+    reset_gui_app(app)
+
+
+def test_clear_viewer_blocks_roi_until_preview_or_1to1_restores_canvas(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    monkeypatch.setattr(ezdic.messagebox, "showwarning", lambda *_args, **_kwargs: None)
+    folder = tmp_path / "images_overlay_roi"
+    folder.mkdir()
+    speckle = ezdic.generate_synthetic_speckle(100, 140, seed=11)
+    for index in range(2):
+        frame = speckle if index == 0 else ezdic.warp_image_translation(speckle, 0.8, -0.3)
+        ok, data = cv2.imencode(".png", np.clip(frame, 0, 255).astype(np.uint8))
+        assert ok
+        data.tofile(str(folder / f"frame_{index + 1:03d}.png"))
+    app.image_folder.set(str(folder))
+    app.output_folder.set(str(tmp_path / "out_overlay_roi"))
+    app.load_first_image()
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    reference = np.asarray(app.first_img8, dtype=np.float32)
+    deformed = ezdic.warp_image_translation(reference, 0.8, -0.3)
+    field = ezdic.run_2d_dic(reference, deformed, (12, 12, 80, 50), subset_size=15, step=8)
+    app.show_field_viewer(
+        field,
+        component="u",
+        image=deformed,
+        frame_1based=2,
+        filename="frame_002.png",
+        reference_frame_1based=1,
+        reference_filename="frame_001.png",
+    )
+    overlay = np.asarray(app.display_img).copy()
+    assert app._canvas_shows_field_overlay is True
+
+    class _Event:
+        def __init__(self, x, y):
+            self.x = x
+            self.y = y
+
+    app.dic_last_field = None
+    app._viewer_kind = "extensometer"
+    app.auto_fit_enabled = True
+    app.display_img = overlay
+    app._canvas_shows_field_overlay = True
+    app.field_roi = None
+    app.on_mouse_down(_Event(10, 10))
+    assert app.drag_start is None
+    app.drag_start = (10, 10)
+    app.on_mouse_up(_Event(80, 80))
+    assert app.field_roi is None
+    assert app.drag_start is None
+
+    app.show_field_viewer(
+        field,
+        component="u",
+        image=deformed,
+        frame_1based=2,
+        filename="frame_002.png",
+        reference_frame_1based=1,
+        reference_filename="frame_001.png",
+    )
+    leftover = np.asarray(app.display_img).copy()
+    app.clear_viewer(keep_placeholder=True)
+    assert app._canvas_shows_field_overlay is False
+    assert app.current_fullres_img8 is not None
+    restored = np.asarray(app.display_img)
+    assert restored.ndim == 3
+    assert restored.shape[2] == 3
+    preview_rgb, _ = ezdic.get_display_image(app.current_fullres_img8, max_w=restored.shape[1], max_h=restored.shape[0])
+    np.testing.assert_array_equal(restored, preview_rgb)
+
+    app.field_roi = None
+    app.on_mouse_down(_Event(12, 12))
+    assert app.drag_start is not None
+    app.on_mouse_up(_Event(70, 70))
+    assert app.field_roi is not None
+    preview_roi = app.field_roi
+    del leftover
+
+    app.show_field_viewer(
+        field,
+        component="u",
+        image=deformed,
+        frame_1based=2,
+        filename="frame_002.png",
+        reference_frame_1based=1,
+        reference_filename="frame_001.png",
+    )
+    app.field_roi = None
+    app.load_preview_frame(0)
+    assert app._canvas_shows_field_overlay is False
+    app.on_mouse_down(_Event(12, 12))
+    assert app.drag_start is not None
+    app.on_mouse_up(_Event(70, 70))
+    assert app.field_roi is not None
+    assert app.field_roi_reference_frame_1based == 1
+
+    app.show_field_viewer(
+        field,
+        component="u",
+        image=deformed,
+        frame_1based=2,
+        filename="frame_002.png",
+        reference_frame_1based=1,
+        reference_filename="frame_001.png",
+    )
+    app.field_roi = None
+    app.show_image_1to1()
+    assert app._canvas_shows_field_overlay is False
+    app.on_mouse_down(_Event(12, 12))
+    assert app.drag_start is not None
+    app.on_mouse_up(_Event(70, 70))
+    assert app.field_roi is not None
+    assert preview_roi[2] >= 15 and preview_roi[3] >= 15
     reset_gui_app(app)
 
 
