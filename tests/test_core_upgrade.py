@@ -102,6 +102,39 @@ def test_rank_one_periodic_discriminator_rejects_multiple_periods_and_phases(per
     assert core.texture_failure_code(metrics, 8.0, 25.0, 0.20) == "AMBIGUOUS_TEXTURE"
 
 
+def test_pillow_fallback_uses_rgb_luma_not_bgr_and_expands_palette(tmp_path, monkeypatch):
+    from PIL import Image
+
+    red_path = tmp_path / "red.png"
+    Image.new("RGB", (12, 10), (255, 0, 0)).save(red_path)
+    opencv_gray = core.read_gray_image(red_path)
+    monkeypatch.setattr(core.cv2, "imdecode", lambda *_args, **_kwargs: None)
+    pillow_gray = core.read_gray_image(red_path)
+    rgb_luma = 0.299 * 255.0
+    swapped_bgr_luma = 0.114 * 255.0
+    assert float(np.mean(pillow_gray)) == pytest.approx(rgb_luma, abs=1.5)
+    assert abs(float(np.mean(pillow_gray)) - swapped_bgr_luma) > 20
+    np.testing.assert_allclose(pillow_gray.astype(np.float32), opencv_gray.astype(np.float32), atol=1.5)
+
+    palette_path = tmp_path / "palette.png"
+    palette = Image.new("P", (8, 8))
+    palette.putpalette([255, 0, 0] + [0] * 765)
+    palette.save(palette_path)
+    palette_gray = core.read_gray_image(palette_path)
+    assert float(np.mean(palette_gray)) == pytest.approx(rgb_luma, abs=1.5)
+
+
+def test_unsupported_channel_count_is_fail_closed(tmp_path, monkeypatch):
+    path = tmp_path / "two_channel.bin"
+    path.write_bytes(b"not-an-image-but-nonempty")
+    two_channel = np.zeros((6, 7, 2), dtype=np.uint8)
+    monkeypatch.setattr(core.cv2, "imdecode", lambda *_args, **_kwargs: two_channel)
+    with pytest.raises(core.CoreError) as error:
+        core.read_gray_image(path)
+    assert error.value.code == "INVALID_IMAGE"
+    assert "1-, 3-, or 4-channel" in error.value.details["message"]
+
+
 def test_corrupt_existing_image_is_structured_input_file_error(tmp_path):
     path = tmp_path / "corrupt.png"
     path.write_bytes(b"not-an-image")
@@ -116,7 +149,10 @@ def test_gui_reexports_input_and_texture_contracts_without_duplicate_entrypoints
     for name in (
         "CoreError",
         "read_gray_image",
+        "collect_images",
+        "image_sequence_fingerprint",
         "normalize_to_uint8",
+        "get_display_image",
         "compute_reference_normalization",
         "normalize_with_bounds",
         "sha256_file",

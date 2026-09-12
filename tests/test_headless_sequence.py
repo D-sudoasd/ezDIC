@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import dic_virtual_extensometer_gui_v7_multi_roi_range as gui
 import ezdic_core as core
 
 
@@ -51,6 +52,39 @@ def test_collect_images_tie_order_is_stable_across_calls_and_processes(tmp_path:
         observed.append(json.loads(completed.stdout))
     assert all(item == expected for item in observed)
     assert [Path(path).name for path in expected] == ["frame_1.png", "frame_02.png", "frame_2.png", "frame_10.png"]
+
+
+def test_collect_images_includes_uppercase_suffixes_and_matches_gui(tmp_path: Path) -> None:
+    image_dir = tmp_path / "mixed_case"
+    image_dir.mkdir()
+    _write_png(image_dir / "frame_1.PNG", np.full((8, 8), 110, dtype=np.uint8))
+    _write_png(image_dir / "frame_2.jpg", np.full((8, 8), 130, dtype=np.uint8))
+    (image_dir / "notes.txt").write_text("ignore", encoding="utf-8")
+    names = [Path(path).name for path in core.collect_images(image_dir)]
+    assert names == ["frame_1.PNG", "frame_2.jpg"]
+    assert gui.collect_images is core.collect_images
+    assert [Path(path).name for path in gui.collect_images(image_dir)] == names
+
+
+def test_write_corr_plot_alias_enables_correlation_plot_export(tmp_path: Path) -> None:
+    options = core._extensometer_options({"export": {"write_corr_plot": True}})
+    assert options["corr_plot"] is True
+    paths = _sequence(tmp_path)
+    settings = {
+        "image_paths": [str(path) for path in paths],
+        "start_frame_1based": 1,
+        "end_frame_1based": 3,
+        "reference_frame_1based": 1,
+        "output_dir": str(tmp_path / "out_corr"),
+        "roi_groups": [{"name": "G01", "roi1": (20, 45, 21, 21), "roi2": (85, 45, 21, 21), "strain_mode": "x"}],
+        "enable_fb_check": False,
+        "quality": {"enable_fb_check": False, "min_valid_frames": 1, "min_strain_valid_ratio": 0.0},
+        "export": {"write_manifest": True, "write_qc": True, "write_full_csv": True, "write_corr_plot": True},
+    }
+    result = core.run_extensometer_sequence(settings)
+    assert result["scientific_ok"] is True
+    corr_dir = tmp_path / "out_corr" / "optional" / "correlation_plots"
+    assert list(corr_dir.glob("correlation_scores_*.png"))
 
 
 def test_extensometer_real_files_publish_and_verify(tmp_path: Path) -> None:

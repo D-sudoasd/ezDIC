@@ -84,8 +84,10 @@ def reset_gui_app(app):
     if hasattr(app, "export_origin_opju"):
         app.export_origin_opju.set(False)
     if hasattr(app, "analysis_mode"):
+        app.is_processing = False
+        app._completion_pending = False
         app.analysis_mode.set(ezdic.ANALYSIS_MODE_EXTENSOMETER)
-        app.set_analysis_mode()
+        app._committed_analysis_mode = ezdic.ANALYSIS_MODE_EXTENSOMETER
     if hasattr(app, "dic_subset_size"):
         app.dic_subset_size.set(21)
         app.dic_step.set(5)
@@ -132,6 +134,8 @@ def reset_gui_app(app):
     app._completion_pending = False
     app._active_run_token = None
     app.is_processing = False
+    if hasattr(app, "analysis_mode"):
+        app.set_analysis_mode()
 
 
 def load_two_frame_sequence(app, folder, output_folder):
@@ -1629,6 +1633,103 @@ def test_gui_exposes_dual_mode_fullfield_controls_and_field_viewer(gui_app):
         app.viewer_frame.grid_remove()
         app.analysis_mode.set(ezdic.ANALYSIS_MODE_EXTENSOMETER)
         app.set_analysis_mode()
+
+
+def test_mode_switch_clears_stale_viewer_and_locks_during_processing(gui_app):
+    root, app = gui_app
+    reset_gui_app(app)
+    reference = ezdic.generate_synthetic_speckle(64, 64, seed=3)
+    deformed = ezdic.warp_image_translation(reference, 0.6, -0.3)
+    field = ezdic.run_2d_dic(reference, deformed, (12, 12, 40, 40), subset_size=15, step=8)
+    app.current_fullres_img8 = np.zeros_like(reference, dtype=np.uint8)
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    app.show_field_viewer(
+        field,
+        component="u",
+        image=deformed,
+        frame_1based=2,
+        filename="frame_002.png",
+        reference_frame_1based=1,
+        reference_filename="frame_001.png",
+    )
+    root.update_idletasks()
+    assert app.dic_last_field is not None
+    assert app._viewer_kind == "fullfield"
+
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_EXTENSOMETER)
+    app.set_analysis_mode()
+    root.update_idletasks()
+    assert app.dic_last_field is None
+    assert app.results_df is None
+    assert app._viewer_kind == "extensometer"
+    assert app._committed_analysis_mode == ezdic.ANALYSIS_MODE_EXTENSOMETER
+
+    app.is_processing = True
+    app.update_workflow_action_states()
+    assert str(app.mode_fullfield_radio.cget("state")) == "disabled"
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    assert str(app.analysis_mode.get()) == ezdic.ANALYSIS_MODE_EXTENSOMETER
+    app.is_processing = False
+    app.update_workflow_action_states()
+    assert str(app.mode_fullfield_radio.cget("state")) == "normal"
+    reset_gui_app(app)
+
+
+def test_fullfield_pyramid_entry_is_not_covered_by_draw_roi_row(gui_app):
+    _root, app = gui_app
+    reset_gui_app(app)
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    levels_row = int(app.dic_pyramid_levels_entry.grid_info()["row"])
+    draw_row = int(app.draw_field_roi_button.master.grid_info()["row"])
+    assert levels_row != draw_row
+    assert draw_row > int(app.dic_pyramid_scale_entry.grid_info()["row"])
+    assert app.dic_search_radius_entry.winfo_manager() == "grid"
+    assert app.dic_zncc_min_entry.winfo_manager() == "grid"
+    app.dic_search_radius.set(32)
+    app.dic_zncc_min.set(0.82)
+    assert int(app.dic_search_radius.get()) == 32
+    assert float(app.dic_zncc_min.get()) == pytest.approx(0.82)
+    reset_gui_app(app)
+
+
+def test_select_image_folder_does_not_overwrite_existing_output(gui_app, tmp_path, monkeypatch):
+    _root, app = gui_app
+    reset_gui_app(app)
+    chosen = tmp_path / "images_keep_output"
+    chosen.mkdir()
+    existing_output = tmp_path / "project_output"
+    app.output_folder.set(str(existing_output))
+    monkeypatch.setattr(ezdic.filedialog, "askdirectory", lambda **_kwargs: str(chosen))
+    app.select_image_folder()
+    assert app.image_folder.get() == str(chosen)
+    assert app.output_folder.get() == str(existing_output)
+    app.output_folder.set("")
+    app.select_image_folder()
+    assert Path(app.output_folder.get()).name == "ezDIC_extensometer_output"
+    reset_gui_app(app)
+
+
+def test_fullfield_overlay_does_not_accept_roi_drawing(gui_app):
+    _root, app = gui_app
+    reset_gui_app(app)
+    reference = ezdic.generate_synthetic_speckle(64, 64, seed=5)
+    deformed = ezdic.warp_image_translation(reference, 0.5, -0.2)
+    field = ezdic.run_2d_dic(reference, deformed, (12, 12, 40, 40), subset_size=15, step=8)
+    app.current_fullres_img8 = np.zeros((64, 64), dtype=np.uint8)
+    app.first_img8 = app.current_fullres_img8
+    app.analysis_mode.set(ezdic.ANALYSIS_MODE_FULLFIELD)
+    app.set_analysis_mode()
+    app.show_field_viewer(field, component="u", image=deformed, frame_1based=2, filename="frame_002.png")
+    class _Event:
+        x = 10
+        y = 10
+    app.on_mouse_down(_Event())
+    assert app.drag_start is None
+    assert "叠加图" in app.status_var.get()
+    reset_gui_app(app)
 
 
 def test_fullfield_preflight_requires_field_roi_not_extensometer_groups(gui_app, tmp_path, monkeypatch):

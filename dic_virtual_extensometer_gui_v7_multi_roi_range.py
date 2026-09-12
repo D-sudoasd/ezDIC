@@ -2859,6 +2859,7 @@ class MultiROIGUI:
         self.dic_last_reference_filename = None
         self.field_viewer_context_var = tk.StringVar(value="")
         self._viewer_kind = "extensometer"
+        self._committed_analysis_mode = ANALYSIS_MODE_EXTENSOMETER
 
         # 图像缩放状态
         self.zoom_factor = 1.0          # 相对于原始图像的缩放倍率
@@ -4061,8 +4062,28 @@ class MultiROIGUI:
             "相邻金字塔层缩放比例（0<scale<1）。默认 0.5；只有层数大于 1 时生效。",
         )
 
+        ttk.Label(self.fullfield_frame, text="整数搜索半径 px").grid(row=7, column=0, sticky="w", padx=(0, 6), pady=1)
+        self.dic_search_radius_entry = ttk.Entry(
+            self.fullfield_frame, textvariable=self.dic_search_radius, width=8
+        )
+        self.dic_search_radius_entry.grid(row=7, column=1, sticky="w", pady=1)
+        self.add_tooltip(
+            self.dic_search_radius_entry,
+            "整数相关初值的搜索半径，单位 px。真实位移超过该半径时容易失败；调大更慢但更能跟上大位移。",
+        )
+
+        ttk.Label(self.fullfield_frame, text="ZNCC 下限").grid(row=8, column=0, sticky="w", padx=(0, 6), pady=1)
+        self.dic_zncc_min_entry = ttk.Entry(
+            self.fullfield_frame, textvariable=self.dic_zncc_min, width=8
+        )
+        self.dic_zncc_min_entry.grid(row=8, column=1, sticky="w", pady=1)
+        self.add_tooltip(
+            self.dic_zncc_min_entry,
+            "子集相关的 ZNCC 接受下限，范围 0 到 1。调高更保守，失败点保持 NaN。",
+        )
+
         draw_row = ttk.Frame(self.fullfield_frame, style="Card.TFrame")
-        draw_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        draw_row.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.draw_field_roi_button = ttk.Button(
             draw_row,
             text="画全场 ROI",
@@ -4088,7 +4109,31 @@ class MultiROIGUI:
         return str(self.analysis_mode.get()) == ANALYSIS_MODE_FULLFIELD
 
     def set_analysis_mode(self, *_args):
+        requested = str(self.analysis_mode.get())
+        committed = getattr(self, "_committed_analysis_mode", ANALYSIS_MODE_EXTENSOMETER)
+        if getattr(self, "is_processing", False) or getattr(self, "_completion_pending", False):
+            if requested != committed:
+                self.analysis_mode.set(committed)
+                if hasattr(self, "status_var"):
+                    self.status_var.set("正在处理或收尾：不能切换分析模式。")
+                if hasattr(self, "log"):
+                    self.log("分析进行中，已保持当前模式。")
+            return
+        self._committed_analysis_mode = requested
         is_ff = self.is_fullfield_mode()
+        previous_kind = getattr(self, "_viewer_kind", "extensometer")
+        target_kind = "fullfield" if is_ff else "extensometer"
+        if previous_kind != target_kind and (
+            getattr(self, "viewer_figure", None) is not None
+            or getattr(self, "results_df", None) is not None
+            or getattr(self, "dic_last_field", None) is not None
+        ):
+            self.last_qc_summary = None
+            if hasattr(self, "qc_overview_var"):
+                self.qc_overview_var.set("分析完成后显示 QC 总览。")
+            if hasattr(self, "clear_viewer"):
+                self.clear_viewer(keep_placeholder=True)
+            self._restore_sequence_preview()
         if hasattr(self, "fullfield_frame"):
             if is_ff:
                 self.fullfield_frame.grid()
@@ -4939,10 +4984,16 @@ class MultiROIGUI:
                 self.viewer_frame.grid_remove()
 
     def select_image_folder(self):
-        folder = filedialog.askdirectory(title="选择 TIF 图片文件夹")
+        folder = filedialog.askdirectory(title="选择图像序列文件夹")
         if folder:
             self.image_folder.set(folder)
-            self.output_folder.set(os.path.join(folder, "virtual_extensometer_output_v7_multi_roi_range"))
+            if not str(self.output_folder.get() or "").strip():
+                default_name = (
+                    "ezDIC_fullfield_output"
+                    if self.is_fullfield_mode()
+                    else "ezDIC_extensometer_output"
+                )
+                self.output_folder.set(os.path.join(folder, default_name))
             self.remember_recent_paths(image_dir=folder, output_dir=self.output_folder.get())
             self.log(f"图像文件夹：{folder}")
 
@@ -5410,6 +5461,11 @@ class MultiROIGUI:
                 x, y, w, h = roi
                 self.dic_field_summary_var.set(f"ROI {w}×{h} px @ ({x},{y})")
 
+        can_switch_mode = not is_processing and not completion_pending
+        for attr in ("mode_extensometer_radio", "mode_fullfield_radio"):
+            if hasattr(self, attr):
+                getattr(self, attr).config(state=tk.NORMAL if can_switch_mode else tk.DISABLED)
+
         if hasattr(self, "start_button"):
             ready = has_field_roi if is_ff else has_groups
             can_start = has_sequence and ready and not blocking_items and not is_processing and not completion_pending
@@ -5443,6 +5499,21 @@ class MultiROIGUI:
             self.workflow_hint_var.set(hint)
 
         self._update_image_toolbar_state()
+
+    def _restore_sequence_preview(self):
+        """Rebuild the image canvas from the loaded frame, dropping a stale overlay."""
+        if self.current_fullres_img8 is None:
+            return
+        self.auto_fit_enabled = True
+        self.display_img = None
+        if hasattr(self, "_rescale_display_to_current_size"):
+            self._rescale_display_to_current_size()
+        if self.display_img is None:
+            self.display_img, self.display_scale = get_display_image(
+                self.current_fullres_img8, max_w=1280, max_h=820
+            )
+            self.zoom_factor = self.display_scale
+            self.show_image()
 
     def _on_mouse_wheel(self, event):
         """支持鼠标滚轮缩放，围绕鼠标指针位置进行（专业图像工具标准行为）。"""
@@ -5549,6 +5620,16 @@ class MultiROIGUI:
 
     def on_mouse_down(self, event):
         if self.first_img8 is None:
+            return
+        if getattr(self, "is_processing", False) or getattr(self, "_completion_pending", False):
+            return
+        if (
+            getattr(self, "_viewer_kind", "extensometer") == "fullfield"
+            and getattr(self, "dic_last_field", None) is not None
+            and not getattr(self, "auto_fit_enabled", True)
+        ):
+            self.status_var.set("当前画布是全场结果叠加图。请先显示预览/参考帧再画 ROI。")
+            self.log("已忽略在结果叠加图上的 ROI 绘制；请先恢复预览帧。")
             return
 
         self.drag_start = (self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))
@@ -7680,7 +7761,10 @@ warp_image_translation = _core.warp_image_translation
 warp_image_deformation_gradient = _core.warp_image_deformation_gradient
 green_lagrange_from_F = _core.green_lagrange_from_F
 read_gray_image = _core.read_gray_image
+collect_images = _core.collect_images
+image_sequence_fingerprint = _core.image_sequence_fingerprint
 normalize_to_uint8 = _core.normalize_to_uint8
+get_display_image = _core.get_display_image
 integer_cc_guess = _core.integer_cc_guess
 match_template_candidate = _core.match_template_candidate
 match_template_candidate_diagnostic = _core.match_template_candidate_diagnostic

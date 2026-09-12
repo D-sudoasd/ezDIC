@@ -11,7 +11,6 @@ import math
 import os
 import platform
 import re
-import glob
 import shutil
 import sys
 import time
@@ -35,9 +34,11 @@ from PIL import Image
 APP_NAME = "ezDIC"
 APP_VERSION = "0.1.4"
 ORIGIN_OPJU_FILENAME = "ezDIC_results.opju"
+IMAGE_SUFFIXES = frozenset({".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp"})
 IMAGE_EXTENSIONS = [
     "*.tif", "*.tiff", "*.TIF", "*.TIFF",
-    "*.png", "*.jpg", "*.jpeg", "*.bmp"
+    "*.png", "*.jpg", "*.jpeg", "*.bmp",
+    "*.PNG", "*.JPG", "*.JPEG", "*.BMP",
 ]
 TRACKING_ACCEPT_MODE_LABELS = {
     "initial": "初始",
@@ -287,17 +288,32 @@ def _validate_group_output_names(groups):
 
 
 def collect_images(folder):
-    paths = []
-    for ext in IMAGE_EXTENSIONS:
-        paths.extend(glob.glob(os.path.join(folder, ext)))
-    # A set removes duplicate case/extension matches but does not provide a
-    # deterministic order for natural-sort ties (for example frame_2 versus
-    # frame_02).  Keep one spelling per normalized path, then use the full
-    # normalized path as an explicit lexical tie-breaker.
+    # Suffix matching is case-insensitive on every platform.  Glob patterns
+    # such as ``*.png`` miss ``.PNG`` on Linux; Windows glob happens to fold
+    # case, so the two would otherwise disagree.
+    try:
+        folder_path = Path(folder)
+    except TypeError:
+        return []
+    try:
+        if not folder_path.is_dir():
+            return []
+        entries = list(folder_path.iterdir())
+    except OSError:
+        return []
     unique = {}
-    for raw_path in paths:
+    for raw_path in entries:
+        try:
+            if not raw_path.is_file():
+                continue
+        except OSError:
+            continue
+        if raw_path.suffix.lower() not in IMAGE_SUFFIXES:
+            continue
         normalized = os.path.normcase(os.path.abspath(os.fspath(raw_path)))
         unique.setdefault(normalized, os.fspath(raw_path))
+    # Natural-sort ties (frame_2 versus frame_02) need an explicit lexical
+    # tie-breaker.  A set of raw spellings is not a stable order.
     return sorted(
         unique.values(),
         key=lambda value: (
@@ -958,6 +974,66 @@ def _validate_finite_image(image, *, path=None):
     return arr
 
 
+def _prepare_pillow_image(im):
+    """Return a Pillow image whose array is grayscale or RGB/RGBA."""
+    mode = im.mode
+    if mode in ("L", "I", "F", "I;16", "I;16B", "I;16L", "RGB", "RGBA"):
+        return im
+    if mode == "1":
+        return im.convert("L")
+    if mode in ("P", "PA"):
+        return im.convert("RGBA" if ("transparency" in im.info or mode == "PA") else "RGB")
+    if mode == "LA":
+        return im.convert("RGBA")
+    if mode in ("CMYK", "YCbCr", "LAB", "HSV"):
+        return im.convert("RGB")
+    return im.convert("RGB")
+
+
+def _color_to_gray(img, *, color_order, path=None):
+    """Convert a decoded 2-D/3-D array to grayscale using the decoder's channel order."""
+    img = _validate_finite_image(img, path=path)
+    if img.ndim == 2:
+        return img
+    channels = int(img.shape[2])
+    if channels == 1:
+        return _validate_finite_image(img[:, :, 0], path=path)
+    if channels not in (3, 4):
+        raise CoreError(
+            "INVALID_IMAGE",
+            {
+                "path": str(path) if path is not None else None,
+                "shape": tuple(int(value) for value in img.shape),
+                "message": "only 1-, 3-, or 4-channel images can be converted to grayscale",
+            },
+        )
+    if color_order == "rgb":
+        code = cv2.COLOR_RGBA2GRAY if channels == 4 else cv2.COLOR_RGB2GRAY
+    elif color_order == "bgr":
+        code = cv2.COLOR_BGRA2GRAY if channels == 4 else cv2.COLOR_BGR2GRAY
+    else:
+        raise CoreError(
+            "INVALID_IMAGE",
+            {
+                "path": str(path) if path is not None else None,
+                "message": f"unsupported colour order: {color_order}",
+            },
+        )
+    try:
+        gray = cv2.cvtColor(img, code)
+    except cv2.error as exc:
+        raise CoreError(
+            "INVALID_IMAGE",
+            {
+                "path": str(path) if path is not None else None,
+                "shape": tuple(int(value) for value in img.shape),
+                "dtype": str(img.dtype),
+                "message": f"colour conversion failed: {exc}",
+            },
+        ) from exc
+    return _validate_finite_image(gray, path=path)
+
+
 def read_gray_image(path):
     """
     稳健读取图像。
@@ -966,21 +1042,26 @@ def read_gray_image(path):
     """
     path = str(path)
     img = None
+    color_order = "bgr"
     errors = []
 
     try:
         data = np.fromfile(path, dtype=np.uint8)
         if data.size > 0:
             img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+            if img is not None:
+                color_order = "bgr"
     except Exception as exc:
         errors.append(f"cv2.imdecode failed: {exc}")
+        img = None
 
     if img is None:
         try:
             with Image.open(path) as im:
                 if getattr(im, "n_frames", 1) > 1:
                     im.seek(0)
-                img = np.array(im)
+                img = np.array(_prepare_pillow_image(im))
+                color_order = "rgb"
         except Exception as exc:
             errors.append(f"Pillow failed: {exc}")
 
@@ -997,18 +1078,7 @@ def read_gray_image(path):
 
     # Validate the decoded samples before colour conversion.  OpenCV/Pillow
     # decoding can otherwise propagate NaN/Inf into a later uint8 cast.
-    img = _validate_finite_image(img, path=path)
-
-    if img.ndim == 3:
-        if img.shape[2] == 4:
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
-        else:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    if img.ndim == 3 and img.shape[2] == 1:
-        img = img[:, :, 0]
-
-    return _validate_finite_image(img, path=path)
+    return _color_to_gray(img, color_order=color_order, path=path)
 
 
 def _coerce_normalization_bounds(bounds):
@@ -1200,13 +1270,18 @@ def normalize_to_uint8(img, lo=None, hi=None):
 
 
 def get_display_image(img8, max_w=1120, max_h=720):
-    h, w = img8.shape[:2]
+    arr = np.asarray(img8)
+    if arr.ndim != 2:
+        raise ValueError("get_display_image expects a 2-D grayscale image")
+    if arr.dtype != np.uint8:
+        arr = np.clip(np.rint(np.nan_to_num(arr, nan=0.0)), 0, 255).astype(np.uint8)
+    h, w = arr.shape[:2]
     scale = min(max_w / w, max_h / h, 1.0)
 
     if scale < 1:
-        disp = cv2.resize(img8, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        disp = cv2.resize(arr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     else:
-        disp = img8.copy()
+        disp = arr.copy()
 
     rgb = cv2.cvtColor(disp, cv2.COLOR_GRAY2RGB)
     return rgb, scale
@@ -6000,7 +6075,7 @@ def _extensometer_options(settings):
         "publication_figures": ("export_publication_figures", "write_publication_figures"),
         "qc_summary": ("export_qc_summary", "write_qc"),
         "full_csv": ("export_full_csv", "write_full_csv"),
-        "corr_plot": ("export_corr_plot", "write_correlation_plots"),
+        "corr_plot": ("export_corr_plot", "write_corr_plot", "write_correlation_plots"),
         "overlays": ("export_overlays", "write_overlays"),
         "parameters": ("export_parameters", "write_parameters"),
     }

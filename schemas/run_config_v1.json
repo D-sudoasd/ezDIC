@@ -105,7 +105,7 @@
         "use_prev_frame_template": {"type": "boolean"},
         "template_policy": {"enum": ["fixed_reference", "follow_deformed_experimental"]},
         "template_alpha": {"$ref": "#/$defs/fraction"},
-        "max_frame_jump_px": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/positiveNumber"}]},
+        "max_frame_jump_px": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/positiveNumber"}], "description": "Maximum accepted |Δ engineering strain| between successive accepted frames. The _px suffix is historical; the comparison is strain, not pixels."},
         "pixel_size_mm": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/positiveNumber"}]}
       }
     },
@@ -144,7 +144,7 @@
         "name": {"enum": ["IC-GN", "IC-LM"]},
         "subset_size_px": {"type": "integer", "minimum": 9},
         "step_px": {"type": "integer", "minimum": 1},
-        "strain_window_px": {"type": "integer", "minimum": 3},
+        "strain_window_px": {"type": "integer", "minimum": 3, "description": "Odd POI-neighborhood size for the local strain fit, not image pixels. Physical span is (window-1)*step_px."},
         "smooth_sigma_poi": {"$ref": "#/$defs/nonNegativeNumber", "description": "POI-grid index units."},
         "search_radius_px": {"type": "integer", "minimum": 1},
         "max_iterations": {"type": "integer", "minimum": 1},

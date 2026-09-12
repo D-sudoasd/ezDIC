@@ -258,8 +258,11 @@ def test_texture_rejections_use_scientific_gate_exit_code(code: str) -> None:
 
 def test_schema_and_manual_normalizer_agree_on_representative_contracts() -> None:
     jsonschema = pytest.importorskip("jsonschema")
+    validator_cls = getattr(jsonschema, "Draft202012Validator", None)
+    if validator_cls is None:
+        pytest.skip("jsonschema Draft 2020-12 validator is not installed")
     schema = ezdic_cli.load_schema()
-    validator = jsonschema.Draft202012Validator(schema)
+    validator = validator_cls(schema)
     for mode in ("extensometer", "fullfield"):
         config = _config(mode, ["a.png", "b.png"])
         assert not list(validator.iter_errors(config))
