@@ -15,7 +15,8 @@
 - 无有限应变的帧是正常跳过的失败帧；其他帧有效且整轮无致命异常时仍可提交。整轮没有有效帧时失败，不提交当前结果。
 - 全场 UI 提供可见的可选 Exx overlay 开关；1D 导出项不参与 2D 核心输出，也不作为 2D 运行门槛。
 - 在 README、中文使用说明、引用/归档元数据和便携包清单中同步版本、发布日期、双模式说明和科学边界；既有历史发布说明保留不变。
-- 将可选 `originpro` 依赖移至 `requirements-origin.txt`；发布构建依赖仍显式包含它，以保留可选 OPJU 打包路径。
+- 将可选 `originpro` 依赖移至 `requirements-origin.txt`。基础运行依赖和 `requirements-build.txt` 都不安装 OriginPro；可选 OPJU 导出需要另外安装 `requirements-origin.txt`，并具备 Windows + OriginPro 2021+ 许可。
+- 本说明中的 `dic/_previous_runs/<timestamp>/` 与 `dic/_failed_runs/<timestamp>/` 是当时 GUI 全场事务路径。v0.2.0-dev 的 CLI/core 改为输出根下的 `_previous_runs/<run_id>/` 与 `_failed_runs/<run_id>/`；详见 `RELEASE_NOTES_v0.2.0-dev.md`。
 - 发布构建脚本增加版本、JSON/引用元数据、spec 数据清单和原生命令退出码检查，并把 LICENSE/CITATION 文件复制到便携包。
 
 历史兼容说明：Poisson ratio export and GUI workflow update 仍以保留的历史发布说明为准；本版本保留该能力，不把历史变化重复计算为 v0.1.4 的新科学结论。

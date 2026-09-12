@@ -5,7 +5,7 @@ ezDIC v0.1.4 使用说明
 
 v0.2.0-dev 开发目标（尚未发布）
 ------------------------------
-当前开发分支已经实现一个有明确边界的研究级升级，但没有修改 `VERSION.txt`、
+当前 `main` 源码树已经实现一个有明确边界的研究级升级，但没有修改 `VERSION.txt`、
 `CITATION.cff`、Zenodo 元数据、许可证、作者署名或 DOI；这些仍是本源代码快照的
 v0.1.4 元数据。目标是固定参考、局部子集、面内 2D DIC 加现有 1D 虚拟引伸计，
 不是“超过所有 DIC 软件”或“已证明适用于实验数据”的声明。
@@ -37,9 +37,9 @@ https://doi.org/10.5281/zenodo.20222465
 
 如何运行便携版
 --------------
-1. 打开 [Releases 页面](https://github.com/D-sudoasd/ezDIC/releases)，下载页面当前实际列出的、已发布并经过冻结 smoke 验证的 Windows x64 版本。未经本轮验证的本地 ZIP 不应当当作发布资产。
+1. 打开 [Releases 页面](https://github.com/D-sudoasd/ezDIC/releases)。当前已发布的便携 ZIP 是 **v0.1.3**（仅虚拟引伸计）。本 `main` 源码是未发布的 **v0.2.0-dev**，引用元数据仍是 **v0.1.4**，不是 GitHub Release 资产。未经本轮验证的本地 ZIP 不应当当作发布资产。
 2. 解压完整的已下载文件夹；便携包内的顶层目录名是 `ezDIC_Windows_x64`，版本号只出现在 ZIP 文件名中。
-3. 双击 ezDIC.exe。
+3. 双击 ezDIC.exe。源码运行也可双击仓库根目录的 `start_ezDIC.bat`。
 
 重要：不要只复制 ezDIC.exe。`_internal` 文件夹以及 LICENSE.txt、CITATION.cff、VERSION.txt 和 NOTICE_Attribution_and_Usage.txt 必须与 ezDIC.exe 一起保留。 Do not copy ezDIC.exe alone.
 
@@ -65,7 +65,10 @@ py -3.11 -m venv .venv
 对应 `schemas/run_config_v1.json`。1D 的 `reference_frame_1based` 必须等于
 `start_frame_1based`；2D 的 `field_roi_reference_frame_1based`（省略时默认同值）
 必须等于 `reference_frame_1based`。2D 运行先把选定参考帧用于初始化，再把其他帧
-全部与同一固定参考帧相关。
+全部与同一固定参考帧相关。当前 CLI/core 的归档目录是输出根下的
+`_previous_runs/<run_id>/` 与 `_failed_runs/<run_id>/`；GUI 对尚无
+`run_manifest.json` 的旧 `dic/frame_*` 会先一次性迁移到
+`dic/_previous_runs/<timestamp>/`。
 
 ```json
 {
@@ -237,7 +240,7 @@ Origin OPJU 是可选功能。若只需要基础运行/测试，不必安装 Ori
 
 ```text
 dic/
-├─ frame_0002.txt       # x, y, u, v, zncc, valid, Exx, Eyy, Exy, exx, eyy, exy
+├─ frame_0002.txt       # x, y, u, v, zncc, valid, Exx, Eyy, Exy, exx, eyy, exy，随后是 strain_valid 与求解器质量列
 ├─ frame_0002.csv
 ├─ frame_0002_u.png
 ├─ frame_0002_v.png

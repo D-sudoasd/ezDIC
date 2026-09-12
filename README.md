@@ -16,7 +16,7 @@ smoke-verified Windows asset.
 
 ### v0.2.0 development target (not released)
 
-The current development branch contains a narrowly scoped research-grade
+The current `main` source tree contains a narrowly scoped research-grade
 upgrade. It does **not** bump `VERSION.txt`, `CITATION.cff`, the Zenodo record,
 or the DOI: those remain the v0.1.4 metadata of this source snapshot. The
 implemented development capability is a reproducible fixed-reference,
@@ -74,7 +74,7 @@ The core output is fixed and is written under `dic/` for every analyzed deformat
 
 ```text
 dic/
-├─ frame_0002.txt       # x, y, u, v, zncc, valid, Exx, Eyy, Exy, exx, eyy, exy
+├─ frame_0002.txt       # x, y, u, v, zncc, valid, Exx, Eyy, Exy, exx, eyy, exy, then strain_valid and solver-quality columns
 ├─ frame_0002.csv
 ├─ frame_0002_u.png
 ├─ frame_0002_v.png
@@ -86,7 +86,7 @@ dic/
 
 `x`, `y`, `u`, and `v` are in **px**. All strain components are **dimensionless**. `Exx`, `Eyy`, and `Exy` are Green–Lagrange components; `exx`, `eyy`, and `exy` are infinitesimal components. `Exy`/`exy` are **tensor shear components** (the off-diagonal strain terms), not engineering shear values with an extra factor of two.
 
-The `valid` column records whether a POI correlation passed the quality threshold. Failed points are exported as `NaN` for measurement fields (`u`/`v`, strain, and quality fields as applicable); `x`/`y` remain the POI grid coordinates. Failed measurements are not interpolated or filled. A frame with no finite strain field is a **normally skipped failed frame**: it contributes no current-frame files, but other valid frames may still be committed if the run has no fatal error. If no analyzed deformation frame has valid strain points, the full-field run fails and is not reported as completed.
+The `valid` column records whether a POI correlation passed the quality threshold. `strain_valid` is a separate strain-fit column and is exported after the 12 core measurement fields, together with solver-quality diagnostics. Failed points are exported as `NaN` for measurement fields (`u`/`v`, strain, and quality fields as applicable); `x`/`y` remain the POI grid coordinates. Failed measurements are not interpolated or filled. A frame with no finite strain field is a **normally skipped failed frame**: it contributes no current-frame files, but other valid frames may still be committed if the run has no fatal error. If no analyzed deformation frame has valid strain points, the full-field run fails and is not reported as completed.
 
 If a fatal I/O, solver, or export exception interrupts the run, the staging
 files already produced by that run are retention-moved to the output-root
@@ -94,7 +94,9 @@ files already produced by that run are retention-moved to the output-root
 current successful output. The run reports failure rather than committing a
 partial result. This is distinct from a normally skipped no-finite-strain
 frame. Old successful outputs remain traceable in output-root
-`_previous_runs/<run_id>/`.
+`_previous_runs/<run_id>/`. A first GUI run that still has pre-ledger
+`dic/frame_*` files migrates those exact names once into
+`dic/_previous_runs/<timestamp>/` before the core ledger takes over.
 
 Each valid frame also gets `frame_####_parameters.txt`, a human-readable provenance record. It records the fixed `reference_frame_1based` and `reference_filename`, the analyzed `frame_global_1based` and `frame_filename`, `field_roi`, image shape, and effective `subset_size_px`, `step_px`, `strain_window`, `solver`, `zncc_min`, and smoothing settings (plus the sequence fingerprint when available).
 
@@ -128,11 +130,11 @@ Failed tracking frames stay `NaN`. Poisson uses role-averaged groups; tiny axial
 
 ## Windows quick start
 
-1. Open the [Releases page](https://github.com/D-sudoasd/ezDIC/releases) and download a published, frozen-smoke-verified Windows x64 asset for a version that is currently listed there. An unverified local ZIP is not a release asset.
+1. Open the [Releases page](https://github.com/D-sudoasd/ezDIC/releases). The latest published portable ZIP is currently **v0.1.3** (1D virtual extensometer). This `main` source tree is unreleased **v0.2.0-dev** with **v0.1.4** citation metadata; it is not a GitHub Release asset. An unverified local ZIP is not a release asset.
 2. Extract the full downloaded folder; the portable package's top-level directory is `ezDIC_Windows_x64`. Keep `_internal/` next to `ezDIC.exe` and retain the license, citation, version, and notice files.
 3. Run `ezDIC.exe` on Windows 10/11 x64.
 
-For source use:
+For source use, either double-click `start_ezDIC.bat` or:
 
 ```powershell
 py -3.11 -m venv .venv
@@ -161,9 +163,10 @@ temporary directory).
 The following are minimal complete configurations. Replace the example image
 and output paths with real paths; the field names are the schema field names.
 The 1D reference must equal `start_frame_1based`; the 2D field-ROI reference
-must equal `reference_frame_1based`. A 2D run processes the selected reference
-first for initialization, then correlates every other selected frame to that
-same fixed reference.
+(`field_roi_reference_frame_1based`; if omitted, it defaults to
+`reference_frame_1based`) must equal `reference_frame_1based`. A 2D run
+processes the selected reference first for initialization, then correlates
+every other selected frame to that same fixed reference.
 
 ```json
 {
